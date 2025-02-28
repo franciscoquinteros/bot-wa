@@ -39,7 +39,7 @@ class SheetsConnection:
     def _connect(self):
         try:
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-            creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+            creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/google-credentials.json", scope)
             self.client = gspread.authorize(creds)
             self.sheet = self.client.open("n8n sheet").sheet1
             logger.info("Conexión con Google Sheets establecida con éxito")
