@@ -1,0 +1,19 @@
+# render.yaml
+services:
+  - type: web
+    name: whatsapp-guest-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn bot_whatsapp:app
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.0
+      - key: FLASK_ENV
+        value: production
+      - key: GOOGLE_SHEET_NAME
+        value: n8n sheet
+      - key: GOOGLE_CREDENTIALS
+        sync: false # Esto indica que debe configurarse manualmente por seguridad
