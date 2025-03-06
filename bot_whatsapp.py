@@ -10,7 +10,6 @@ from functools import lru_cache
 import time
 import os
 import json
-import openai
 
 # Configuración de logging
 logging.basicConfig(
@@ -25,10 +24,16 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Configuración de OpenAI
-openai.api_key = os.environ.get("OPENAI_API_KEY")
-OPENAI_AVAILABLE = bool(openai.api_key)
-logger.info(f"OpenAI está {'disponible' if OPENAI_AVAILABLE else 'NO disponible'}")
+# Configuración de OpenAI (con manejo de importación segura)
+OPENAI_AVAILABLE = False
+try:
+    import openai
+    openai.api_key = os.environ.get("OPENAI_API_KEY")
+    OPENAI_AVAILABLE = bool(openai.api_key)
+    logger.info(f"OpenAI está {'disponible' if OPENAI_AVAILABLE else 'NO disponible (falta API key)'}")
+except ImportError:
+    logger.warning("Módulo OpenAI no está instalado. Se usará análisis básico.")
+    openai = None
 
 # Manejo de la conexión con Google Sheets
 class SheetsConnection:
@@ -69,8 +74,8 @@ def analyze_sentiment(text):
         dict: Diccionario con análisis del sentimiento e intención
     """
     try:
-        if not OPENAI_AVAILABLE:
-            logger.warning("OpenAI no está configurado, usando análisis básico")
+        if not OPENAI_AVAILABLE or openai is None:
+            logger.warning("OpenAI no está disponible, usando análisis básico")
             return analyze_with_rules(text)
             
         # Usar la API de OpenAI para analizar el sentimiento
