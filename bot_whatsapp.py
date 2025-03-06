@@ -100,12 +100,14 @@ def analyze_sentiment(text):
         # En caso de error, usar análisis basado en reglas
         return analyze_with_rules(text)
 
-def analyze_guests_with_ai(guest_list):
+def analyze_guests_with_ai(guest_list, category_info=None):
     """
     Usa OpenAI para extraer y estructurar la información de los invitados
+    con soporte para formato con categorías
     
     Args:
         guest_list (list): Lista de líneas con información de invitados
+        category_info (dict, optional): Información sobre categorías detectadas
         
     Returns:
         list: Lista de diccionarios con información estructurada de invitados
@@ -118,22 +120,33 @@ def analyze_guests_with_ai(guest_list):
         # Convertir la lista de invitados a texto para el prompt
         guests_text = "\n".join(guest_list)
         
+        # Si hay información de categoría, incluirla en el prompt
+        category_context = ""
+        if category_info:
+            category_context = "Ten en cuenta que los invitados están agrupados por categorías. "
+            for category, lines in category_info.items():
+                category_context += f"La categoría '{category}' incluye {len(lines)} invitados. "
+        
         prompt = f"""
-        A continuación hay una lista de invitados. Por favor, extrae y estructura la información de cada invitado en formato JSON.
+        A continuación hay una lista de invitados. {category_context}Por favor, extrae y estructura la información de cada invitado en formato JSON.
+        
+        Reglas importantes:
+        1. Cada línea o entrada debe corresponder exactamente a un invitado.
+        2. Cada invitado debe tener un nombre y un email asociado.
+        3. Si ves un guión o un separador entre el nombre y el email, úsalo para separarlos.
+        4. Si una línea incluye "Hombres:" o "Mujeres:", es un encabezado de categoría, no un invitado.
+        5. El género debe ser "Masculino" si está en la categoría "Hombres" y "Femenino" si está en "Mujeres".
+        
         Para cada invitado, identifica estos campos:
         - nombre: solo el primer nombre de la persona
         - apellido: solo el apellido de la persona
-        - email: el email si está presente, si no lo está, deja el campo vacío
+        - email: el email de la persona (debe haber exactamente un email por invitado)
         - genero: "Masculino", "Femenino" u "Otro" basado en el contexto y nombre
         
         Lista de invitados:
         {guests_text}
         
-        Responde solo con un array JSON. Ejemplo:
-        [
-          {{"nombre": "Juan", "apellido": "Pérez", "email": "juan@example.com", "genero": "Masculino"}},
-          {{"nombre": "María", "apellido": "Gómez", "email": "", "genero": "Femenino"}}
-        ]
+        Responde solo con un array JSON. Cada elemento del array debe corresponder a un invitado único con su email.
         """
         
         response = openai.chat.completions.create(
@@ -147,18 +160,7 @@ def analyze_guests_with_ai(guest_list):
         
         # Obtener la respuesta como JSON
         result_text = response.choices[0].message.content
-        
-        # A veces OpenAI puede envolver la respuesta en un objeto, buscamos el array
-        if "{" in result_text and "[" in result_text:
-            # Buscar el array JSON dentro de la respuesta
-            array_match = re.search(r'\[(.*?)\]', result_text, re.DOTALL)
-            if array_match:
-                array_text = f"[{array_match.group(1)}]"
-                try:
-                    structured_guests = json.loads(array_text)
-                    return structured_guests
-                except:
-                    pass
+        logger.info(f"Respuesta IA para invitados: {result_text[:100]}...")
         
         # Intentar parsear directamente
         try:
@@ -172,87 +174,33 @@ def analyze_guests_with_ai(guest_list):
         except Exception as e:
             logger.error(f"Error al parsear JSON de OpenAI: {e}")
         
+        # Buscar el array JSON dentro de la respuesta como fallback
+        if "{" in result_text and "[" in result_text:
+            array_match = re.search(r'\[(.*?)\]', result_text, re.DOTALL)
+            if array_match:
+                array_text = f"[{array_match.group(1)}]"
+                try:
+                    structured_guests = json.loads(array_text)
+                    return structured_guests
+                except:
+                    pass
+        
         return None
         
     except Exception as e:
         logger.error(f"Error al analizar invitados con OpenAI: {e}")
         return None
 
-def analyze_with_rules(text):
+def parse_message(message):
     """
-    Analiza el texto utilizando reglas simples cuando OpenAI no está disponible
+    Analiza el mensaje para identificar el comando, los datos y las categorías
     
     Args:
-        text (str): El mensaje del usuario
+        message (str): Mensaje del usuario
         
     Returns:
-        dict: Análisis básico del mensaje
+        dict: Información sobre el comando, datos y categorías detectadas
     """
-    # Patrones para detectar intenciones mediante expresiones regulares
-    patterns = {
-        "adición_invitado": [
-            r"(?i)agregar",
-            r"(?i)añadir",
-            r"(?i)sumar",
-            r"(?i)incluir",
-            r"(?i)hombres\s*\n",
-            r"(?i)mujeres\s*\n"
-        ],
-        "consulta_invitados": [
-            r"(?i)cuántos",
-            r"(?i)cantidad",
-            r"(?i)lista",
-            r"(?i)invitados\s+tengo",
-            r"(?i)ver\s+invitados"
-        ],
-        "ayuda": [
-            r"(?i)^ayuda$",
-            r"(?i)cómo\s+funciona",
-            r"(?i)instrucciones"
-        ]
-    }
-    
-    # Detectar la intención según los patrones
-    intent = "otro"
-    for intent_name, patterns_list in patterns.items():
-        for pattern in patterns_list:
-            if re.search(pattern, text):
-                intent = intent_name
-                break
-        if intent != "otro":
-            break
-    
-    # Análisis de sentimiento básico basado en palabras clave
-    positive_words = ["gracias", "excelente", "genial", "bueno", "perfecto", "bien"]
-    negative_words = ["error", "problema", "mal", "falla", "no funciona", "arregla"]
-    
-    text_lower = text.lower()
-    sentiment = "neutral"
-    
-    for word in positive_words:
-        if word in text_lower:
-            sentiment = "positivo"
-            break
-            
-    for word in negative_words:
-        if word in text_lower:
-            sentiment = "negativo"
-            break
-    
-    # Determinar urgencia basado en signos de exclamación y palabras clave de urgencia
-    urgency = "media"
-    if text.count("!") > 1 or any(w in text_lower for w in ["urgente", "inmediato", "rápido", "ya"]):
-        urgency = "alta"
-    
-    return {
-        "sentiment": sentiment,
-        "intent": intent,
-        "urgency": urgency
-    }
-
-# Funciones para procesar mensajes
-def parse_message(message):
-    """Analiza el mensaje para identificar el comando y los datos"""
     message = message.strip()
     
     # Verificar si es una consulta de conteo
@@ -268,7 +216,8 @@ def parse_message(message):
         if re.search(pattern, message.lower()):
             return {
                 'command_type': 'count',
-                'data': None
+                'data': None,
+                'categories': None
             }
     
     # Verificar si es una solicitud de ayuda
@@ -283,37 +232,56 @@ def parse_message(message):
         if re.search(pattern, message.lower()):
             return {
                 'command_type': 'help',
-                'data': None
+                'data': None,
+                'categories': None
             }
     
-    # Extraer invitados - ahora solo detectamos líneas de texto que podrían ser invitados
+    # Extraer invitados y categorías
     lines = message.split('\n')
     valid_lines = []
+    categories = {}
+    current_category = None
     
     for line in lines:
         line = line.strip()
-        if line and len(line) > 2:  # Ignorar líneas demasiado cortas
+        if not line:
+            continue
+        
+        # Verificar si es un encabezado de categoría
+        category_match = re.match(r'^(Hombres|Mujeres|Niños|Adultos|Familia)[\s:]*$', line, re.IGNORECASE)
+        if category_match:
+            current_category = category_match.group(1).capitalize()
+            categories[current_category] = []
+            continue
+        
+        # Si no es un encabezado y tiene contenido, agregarlo como línea válida
+        if line and len(line) > 2:
             valid_lines.append(line)
+            if current_category:
+                categories[current_category] = categories.get(current_category, []) + [line]
     
+    # Si no hay categorías pero hay líneas válidas, crear una categoría predeterminada
+    if valid_lines and not categories:
+        categories["General"] = valid_lines
+    
+    # Verificar si hay líneas válidas para procesar
     return {
         'command_type': 'add_guests' if valid_lines else 'unknown',
-        'data': valid_lines
+        'data': valid_lines,
+        'categories': categories if categories else None
     }
 
-def extract_guest_info(guest_line):
+def extract_guest_info_from_line(line, category=None):
     """
-    Extrae información de invitado de una línea de texto
-    usando reglas básicas cuando IA no está disponible
+    Extrae nombre, apellido, email y género de una línea de texto
     
     Args:
-        guest_line (str): Línea con información del invitado
+        line (str): Línea de texto con información del invitado
+        category (str, optional): Categoría a la que pertenece el invitado
         
     Returns:
         dict: Información estructurada del invitado
     """
-    # Dividir por espacios para obtener nombre y apellido
-    parts = guest_line.split()
-    
     # Valores predeterminados
     guest_info = {
         "nombre": "",
@@ -322,38 +290,87 @@ def extract_guest_info(guest_line):
         "genero": "Otro"
     }
     
+    # Asignar género basado en la categoría si está disponible
+    if category:
+        if category.lower() == "hombres":
+            guest_info["genero"] = "Masculino"
+        elif category.lower() == "mujeres":
+            guest_info["genero"] = "Femenino"
+    
     # Buscar email
-    email_match = re.search(r'[\w\.-]+@[\w\.-]+', guest_line)
+    email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', line)
     if email_match:
         guest_info["email"] = email_match.group(0)
-        # Eliminar el email del texto para procesamiento posterior
-        guest_line = guest_line.replace(email_match.group(0), "").strip()
-        parts = guest_line.split()
+        
+        # Dividir la línea en función del email para obtener el nombre
+        parts = line.split(email_match.group(0))
+        name_part = parts[0].strip()
+        
+        # Eliminar caracteres especiales y separadores comunes
+        name_part = re.sub(r'[-:,]', ' ', name_part).strip()
+        
+        # Dividir el nombre en palabras
+        name_words = name_part.split()
+        if name_words:
+            guest_info["nombre"] = name_words[0]
+            if len(name_words) > 1:
+                guest_info["apellido"] = " ".join(name_words[1:])
+    else:
+        # Si no hay email, tratar toda la línea como nombre
+        words = line.split()
+        if words:
+            guest_info["nombre"] = words[0]
+            if len(words) > 1:
+                guest_info["apellido"] = " ".join(words[1:])
     
-    # Asignar nombre y apellido
-    if len(parts) >= 2:
-        guest_info["nombre"] = parts[0]
-        guest_info["apellido"] = " ".join(parts[1:])
-    elif len(parts) == 1:
-        guest_info["nombre"] = parts[0]
-    
-    # Intentar determinar género basado en terminaciones comunes
-    nombre = guest_info["nombre"].lower()
-    if nombre.endswith("a") or nombre.endswith("ia"):
-        guest_info["genero"] = "Femenino"
-    elif nombre.endswith("o") or nombre.endswith("io"):
-        guest_info["genero"] = "Masculino"
+    # Intentar determinar género si no se ha establecido por categoría
+    if guest_info["genero"] == "Otro":
+        nombre = guest_info["nombre"].lower()
+        if nombre.endswith("a") or nombre.endswith("ia"):
+            guest_info["genero"] = "Femenino"
+        elif nombre.endswith("o") or nombre.endswith("io"):
+            guest_info["genero"] = "Masculino"
     
     return guest_info
 
-def add_guests_to_sheet(sheet, guests_data, phone_number):
+def extract_guests_manually(lines, categories=None):
+    """
+    Procesa manualmente las líneas de invitados cuando IA no está disponible
+    
+    Args:
+        lines (list): Lista de líneas con información de invitados
+        categories (dict, optional): Información sobre categorías detectadas
+        
+    Returns:
+        list: Lista de diccionarios con información estructurada de invitados
+    """
+    guests = []
+    
+    if categories:
+        # Procesar por categorías
+        for category, category_lines in categories.items():
+            for line in category_lines:
+                guest_info = extract_guest_info_from_line(line, category)
+                if guest_info["nombre"]:  # Solo agregar si hay al menos un nombre
+                    guests.append(guest_info)
+    else:
+        # Procesar todas las líneas sin categorías
+        for line in lines:
+            guest_info = extract_guest_info_from_line(line)
+            if guest_info["nombre"]:  # Solo agregar si hay al menos un nombre
+                guests.append(guest_info)
+    
+    return guests
+
+def add_guests_to_sheet(sheet, guests_data, phone_number, categories=None):
     """
     Agrega invitados a la hoja con información estructurada
     
     Args:
         sheet: Objeto de hoja de Google Sheets
-        guests_data: Lista de líneas o diccionarios con datos de invitados
+        guests_data: Lista de líneas con datos de invitados
         phone_number: Número de teléfono del anfitrión
+        categories (dict, optional): Información sobre categorías detectadas
         
     Returns:
         int: Número de invitados añadidos
@@ -367,44 +384,41 @@ def add_guests_to_sheet(sheet, guests_data, phone_number):
             sheet.update('A1:E1', [['Nombre', 'Apellido', 'Email', 'Genero', 'Publica']])
         
         # Procesar datos de invitados
-        rows_to_add = []
+        structured_guests = None
         
         # Primero intentar usar IA para procesar los datos
-        if isinstance(guests_data, list) and all(isinstance(item, str) for item in guests_data):
-            # Lista de strings - intentar procesar con IA
-            structured_guests = analyze_guests_with_ai(guests_data)
+        if OPENAI_AVAILABLE and openai:
+            structured_guests = analyze_guests_with_ai(guests_data, categories)
             
-            if structured_guests:
-                # Usar datos estructurados de IA
-                for guest in structured_guests:
-                    rows_to_add.append([
-                        guest.get("nombre", ""),
-                        guest.get("apellido", ""),
-                        guest.get("email", ""),
-                        guest.get("genero", "Otro"),
-                        phone_number
-                    ])
+        # Si la IA falla o no está disponible, usar procesamiento manual
+        if not structured_guests:
+            structured_guests = extract_guests_manually(guests_data, categories)
+        
+        # Verificar que todos los invitados tengan email
+        has_email_mismatch = False
+        valid_guests = []
+        for guest in structured_guests:
+            if guest.get("email"):
+                valid_guests.append(guest)
             else:
-                # Fallback a reglas básicas
-                for line in guests_data:
-                    guest_info = extract_guest_info(line)
-                    rows_to_add.append([
-                        guest_info["nombre"],
-                        guest_info["apellido"],
-                        guest_info["email"],
-                        guest_info["genero"],
-                        phone_number
-                    ])
-        else:
-            # Ya es una lista de diccionarios
-            for guest in guests_data:
-                rows_to_add.append([
-                    guest.get("nombre", ""),
-                    guest.get("apellido", ""),
-                    guest.get("email", ""),
-                    guest.get("genero", "Otro"),
-                    phone_number
-                ])
+                has_email_mismatch = True
+                logger.warning(f"Invitado sin email detectado: {guest.get('nombre')} {guest.get('apellido')}")
+        
+        # Si hay problemas con emails faltantes, devolver error específico
+        if has_email_mismatch:
+            logger.error("Se detectaron invitados sin email")
+            return -1  # Código especial para indicar error de validación
+        
+        # Crear filas para añadir a la hoja
+        rows_to_add = []
+        for guest in valid_guests:
+            rows_to_add.append([
+                guest.get("nombre", ""),
+                guest.get("apellido", ""),
+                guest.get("email", ""),
+                guest.get("genero", "Otro"),
+                phone_number
+            ])
         
         # Agregar a la hoja
         if rows_to_add:
@@ -417,31 +431,122 @@ def add_guests_to_sheet(sheet, guests_data, phone_number):
         import traceback
         logger.error(traceback.format_exc())
         return 0
-
+    
 def count_guests(sheet, phone_number=None):
-    """Cuenta invitados, opcionalmente filtrados por número de teléfono"""
+    """
+    Cuenta invitados, filtrados por número de teléfono en la columna 'Publica'
+    
+    Args:
+        sheet: Objeto de hoja de Google Sheets
+        phone_number (str): Número de teléfono del usuario que está consultando
+        
+    Returns:
+        dict: Diccionario con conteos por género y total
+    """
     try:
+        # Obtener todos los registros de la hoja
         all_data = sheet.get_all_records()
         
+        # Verificar si hay datos
+        if not all_data:
+            logger.warning("La hoja no contiene datos o solo tiene encabezados")
+            return {'Total': 0}
+        
+        # Loguear las primeras filas para verificar la estructura
+        logger.info(f"Muestra de datos: {all_data[:2]}")
+        
+        # Filtrar por número de teléfono en la columna 'Publica'
+        filtered_data = []
         if phone_number:
-            filtered_data = [row for row in all_data if str(row.get('Publica')) == phone_number]
+            # Loguear para depuración
+            logger.info(f"Buscando invitados con teléfono: {phone_number}")
+            
+            # Comprobar múltiples posibles nombres de columna para mayor robustez
+            possible_columns = ['Publica', 'publica', 'Teléfono', 'telefono', 'Telefono', 'Phone']
+            
+            for row in all_data:
+                # Intentar encontrar la columna correcta
+                phone_value = None
+                for col in possible_columns:
+                    if col in row:
+                        phone_value = str(row[col])
+                        break
+                
+                # Si encontramos el teléfono y coincide, incluir esta fila
+                if phone_value and phone_value == phone_number:
+                    filtered_data.append(row)
         else:
             filtered_data = all_data
+        
+        # Loguear el número de invitados encontrados
+        logger.info(f"Encontrados {len(filtered_data)} invitados para el teléfono {phone_number}")
         
         # Contar por género
         categories = {}
         for row in filtered_data:
-            category = row.get('Genero', 'Sin categoría')
+            # Intentar obtener el género, con múltiples nombres posibles de columna
+            gender = None
+            for col in ['Genero', 'genero', 'Género', 'género', 'Gender']:
+                if col in row:
+                    gender = row[col]
+                    break
+            
+            # Si no se encontró un género, usar "Sin categoría"
+            category = gender if gender else 'Sin categoría'
             categories[category] = categories.get(category, 0) + 1
         
         # Agregar total
         categories['Total'] = len(filtered_data)
         
-        logger.info(f"Conteo completado para {phone_number}: {categories}")
+        logger.info(f"Conteo completo para {phone_number}: {categories}")
         return categories
     except Exception as e:
         logger.error(f"Error al contar invitados: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return {'Total': 0}
+    
+def generate_count_response(result, phone_number, sentiment):
+    """
+    Genera una respuesta personalizada para la consulta de invitados
+    
+    Args:
+        result (dict): Resultados del conteo de invitados
+        phone_number (str): Número de teléfono del usuario
+        sentiment (str): Sentimiento detectado en el mensaje
+        
+    Returns:
+        str: Respuesta personalizada
+    """
+    if not result or result.get('Total', 0) == 0:
+        base_response = "No tienes invitados registrados aún con tu número de teléfono."
+        
+        # Añadir instrucciones si no hay invitados
+        base_response += "\n\nPuedes añadir invitados usando este formato:\n\nHombres:\nJuan Pérez - juan@ejemplo.com\n\nMujeres:\nMaría López - maria@ejemplo.com"
+    else:
+        base_response = f"📋 Tus invitados registrados ({phone_number}):\n\n"
+        
+        # Mostrar conteo por género
+        for category, count in result.items():
+            if category != 'Total':
+                # Formatear categoría para mejor visualización
+                display_category = category
+                if category.lower() == "masculino":
+                    display_category = "Hombres"
+                elif category.lower() == "femenino":
+                    display_category = "Mujeres"
+                
+                base_response += f"- {display_category}: {count}\n"
+        
+        base_response += f"\nTotal: {result.get('Total', 0)} invitados"
+    
+    # Personalizar según sentimiento
+    if sentiment == "positivo":
+        return f"{base_response}\n\n¡Gracias por tu interés! ¿Necesitas añadir más invitados?"
+    elif sentiment == "negativo":
+        return f"{base_response}\n\n¿Hay algo específico en lo que pueda ayudarte con tu lista de invitados?"
+    else:
+        return base_response
 
 def generate_response(command, result, phone_number=None, sentiment_analysis=None):
     """
@@ -492,8 +597,10 @@ def generate_response(command, result, phone_number=None, sentiment_analysis=Non
         count = result
         base_response = ""
         
-        if count == 0:
-            base_response = "No se pudieron registrar invitados. Por favor asegúrate de incluir información clara como: Juan Pérez juan@example.com"
+        if count == -1:  # Error de validación (emails faltantes)
+            return "⚠️ No se pudieron registrar todos los invitados. Por favor, asegúrate de que cada invitado tenga un email asociado. El formato correcto es: Nombre Apellido - email@ejemplo.com"
+        elif count == 0:
+            base_response = "No se pudieron registrar invitados. Por favor asegúrate de incluir información clara como: Juan Pérez - juan@example.com"
         elif count == 1:
             base_response = "✅ Se ha registrado 1 invitado correctamente."
         else:
@@ -510,15 +617,26 @@ def generate_response(command, result, phone_number=None, sentiment_analysis=Non
     elif command == 'help':
         help_text = """📱 *Ayuda del sistema de invitados*
 
-Para agregar invitados, simplemente envía sus datos en formato libre. Por ejemplo:
+Para agregar invitados, puedes usar estos formatos:
 
+1) Por categorías:
 ```
-Juan Pérez juan@example.com
-María Gómez
-Pedro Sánchez pedro.sanchez@gmail.com
+Hombres:
+Juan Pérez - juan@example.com 
+Carlos Gómez - carlos@gmail.com
+
+Mujeres:
+María López - maria@example.com
+Ana Rodríguez - ana@gmail.com
 ```
 
-El sistema identificará automáticamente nombres, apellidos, correos electrónicos y género.
+2) En formato libre:
+```
+Juan Pérez - juan@example.com
+María López - maria@example.com
+```
+
+IMPORTANTE: Cada invitado debe tener un correo electrónico asociado.
 
 Para consultar:
 - Escribe "cuántos invitados" para ver el total
@@ -534,7 +652,18 @@ Para consultar:
     else:
         # Si el comando no se reconoce, responder según el análisis de sentimiento
         if intent == "adición_invitado" or "agregar" in intent.lower():
-            return "Para agregar invitados, envía sus datos línea por línea. Por ejemplo:\n\nJuan Pérez juan@example.com\nMaría Gómez\nPedro Sánchez pedro@gmail.com"
+            return """Para agregar invitados, puedes usar estos formatos:
+
+1) Por categorías:
+Hombres:
+Juan Pérez - juan@example.com 
+Carlos Gómez - carlos@gmail.com
+
+2) En formato libre:
+Juan Pérez - juan@example.com
+María López - maria@example.com
+
+IMPORTANTE: Cada invitado debe tener un correo electrónico asociado."""
         
         elif intent == "consulta_invitados" or "consultar" in intent.lower():
             return "Para ver tus invitados, escribe 'cuántos invitados tengo' o 'lista de invitados'."
@@ -568,11 +697,17 @@ def whatsapp_reply():
         # Analizar el sentimiento del mensaje
         sentiment_analysis = analyze_sentiment(incoming_msg)
         logger.info(f"Análisis de sentimiento: {sentiment_analysis}")
+        sentiment = sentiment_analysis.get("sentiment", "neutral")
         
-        # Procesar el mensaje con la lógica original
+        # Procesar el mensaje con la lógica mejorada
         parsed = parse_message(incoming_msg)
         command_type = parsed['command_type']
         data = parsed['data']
+        categories = parsed['categories']
+        
+        logger.info(f"Comando detectado: {command_type}")
+        if categories:
+            logger.info(f"Categorías detectadas: {list(categories.keys())}")
         
         # Si el análisis de IA detectó una intención específica, sobreescribir el comando
         ai_intent = sentiment_analysis.get("intent", "").lower()
@@ -589,15 +724,89 @@ def whatsapp_reply():
         sheet_conn = SheetsConnection()
         sheet = sheet_conn.get_sheet()
         
-        # Ejecutar el comando correspondiente
-        result = None
-        if command_type == 'add_guests':
-            result = add_guests_to_sheet(sheet, data, sender_phone)
-        elif command_type == 'count':
-            result = count_guests(sheet, sender_phone)
+        # Ejecutar el comando correspondiente y generar respuesta
+        response_text = ""
         
-        # Generar respuesta personalizada según sentimiento
-        response_text = generate_response(command_type, result, sender_phone, sentiment_analysis)
+        if command_type == 'add_guests':
+            result = add_guests_to_sheet(sheet, data, sender_phone, categories)
+            
+            # Generar respuesta para añadir invitados
+            if result == -1:  # Error de validación (emails faltantes)
+                response_text = "⚠️ No se pudieron registrar todos los invitados. Por favor, asegúrate de que cada invitado tenga un email asociado. El formato correcto es: Nombre Apellido - email@ejemplo.com"
+            elif result == 0:
+                response_text = "No se pudieron registrar invitados. Por favor asegúrate de incluir información clara como: Juan Pérez - juan@example.com"
+            elif result == 1:
+                response_text = "✅ Se ha registrado 1 invitado correctamente."
+            else:
+                response_text = f"✅ Se han registrado {result} invitados correctamente."
+                
+            # Personalizar según sentimiento
+            if sentiment == "positivo" and result > 0:
+                response_text += " ¡Gracias por usar nuestro servicio! ¿Deseas agregar más invitados?"
+            
+        elif command_type == 'count':
+            # Llamar a la función mejorada de conteo
+            result = count_guests(sheet, sender_phone)
+            
+            # Usar la función especializada para generar respuesta de conteo
+            response_text = generate_count_response(result, sender_phone, sentiment)
+            
+        elif command_type == 'help':
+            response_text = """📱 *Ayuda del sistema de invitados*
+
+Para agregar invitados, puedes usar estos formatos:
+
+1) Por categorías:
+```
+Hombres:
+Juan Pérez - juan@example.com 
+Carlos Gómez - carlos@gmail.com
+
+Mujeres:
+María López - maria@example.com
+Ana Rodríguez - ana@gmail.com
+```
+
+2) En formato libre:
+```
+Juan Pérez - juan@example.com
+María López - maria@example.com
+```
+
+IMPORTANTE: Cada invitado debe tener un correo electrónico asociado.
+
+Para consultar tus invitados:
+- Escribe "cuántos invitados tengo" o "lista de invitados"
+- Solo verás los invitados que registraste con tu número de teléfono
+"""
+        else:
+            # Comando desconocido - usar la lógica de la IA
+            if ai_intent == "adición_invitado" or "agregar" in ai_intent.lower():
+                response_text = """Para agregar invitados, puedes usar estos formatos:
+
+1) Por categorías:
+Hombres:
+Juan Pérez - juan@example.com 
+Carlos Gómez - carlos@gmail.com
+
+2) En formato libre:
+Juan Pérez - juan@example.com
+María López - maria@example.com
+
+IMPORTANTE: Cada invitado debe tener un correo electrónico asociado."""
+            
+            elif ai_intent == "consulta_invitados" or "consultar" in ai_intent.lower():
+                response_text = "Para ver tus invitados, escribe 'cuántos invitados tengo' o 'lista de invitados'."
+            
+            elif sentiment == "positivo":
+                response_text = "¡Gracias por tu mensaje! Para gestionar tu lista de invitados, puedes añadir invitados enviando sus datos o consultar tu lista escribiendo 'cuántos invitados'."
+            
+            else:
+                response_text = """No pude entender tu mensaje. Puedes:
+
+- Agregar invitados enviando sus datos (nombre, apellido - email)
+- Consultar tu lista con "cuántos invitados"
+- Escribir "ayuda" para ver instrucciones detalladas"""
         
         # Enviar respuesta
         resp = MessagingResponse()
