@@ -24,11 +24,88 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+
+def analyze_with_rules(text):
+    """
+    Analiza el texto utilizando reglas simples cuando OpenAI no está disponible
+    
+    Args:
+        text (str): El mensaje del usuario
+        
+    Returns:
+        dict: Análisis básico del mensaje
+    """
+    # Patrones para detectar intenciones mediante expresiones regulares
+    patterns = {
+        "adición_invitado": [
+            r"(?i)agregar",
+            r"(?i)añadir",
+            r"(?i)sumar",
+            r"(?i)incluir",
+            r"(?i)hombres\s*\n",
+            r"(?i)mujeres\s*\n"
+        ],
+        "consulta_invitados": [
+            r"(?i)cuántos",
+            r"(?i)cantidad",
+            r"(?i)lista",
+            r"(?i)invitados\s+tengo",
+            r"(?i)ver\s+invitados"
+        ],
+        "ayuda": [
+            r"(?i)^ayuda$",
+            r"(?i)^help$",
+            r"(?i)cómo\s+funciona",
+            r"(?i)cómo\s+usar"
+        ]
+    }
+    
+    # Detectar la intención según los patrones
+    intent = "otro"
+    for intent_name, patterns_list in patterns.items():
+        for pattern in patterns_list:
+            if re.search(pattern, text):
+                intent = intent_name
+                break
+        if intent != "otro":
+            break
+    
+    # Análisis de sentimiento básico basado en palabras clave
+    positive_words = ["gracias", "excelente", "genial", "bueno", "perfecto", "bien"]
+    negative_words = ["error", "problema", "mal", "falla", "no funciona", "arregla"]
+    
+    text_lower = text.lower()
+    sentiment = "neutral"
+    
+    for word in positive_words:
+        if word in text_lower:
+            sentiment = "positivo"
+            break
+            
+    for word in negative_words:
+        if word in text_lower:
+            sentiment = "negativo"
+            break
+    
+    # Determinar urgencia basado en signos de exclamación y palabras clave de urgencia
+    urgency = "media"
+    if text.count("!") > 1 or any(w in text_lower for w in ["urgente", "inmediato", "rápido", "ya"]):
+        urgency = "alta"
+    
+    return {
+        "sentiment": sentiment,
+        "intent": intent,
+        "urgency": urgency
+    }
+
+
 # Configuración de OpenAI (con manejo de importación segura)
 OPENAI_AVAILABLE = False
 try:
     import openai
+    # Inicializar sin proxies
     openai.api_key = os.environ.get("OPENAI_API_KEY")
+    # Verificar si la clave está disponible
     OPENAI_AVAILABLE = bool(openai.api_key)
     logger.info(f"OpenAI está {'disponible' if OPENAI_AVAILABLE else 'NO disponible (falta API key)'}")
 except ImportError:
