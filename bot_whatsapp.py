@@ -535,23 +535,18 @@ def count_guests(sheet, phone_number=None):
         # Filtrar por número de teléfono en la columna 'Publica'
         filtered_data = []
         if phone_number:
-            # Loguear para depuración
-            logger.info(f"Buscando invitados con teléfono: {phone_number}")
-            
-            # Comprobar múltiples posibles nombres de columna para mayor robustez
-            possible_columns = ['Publica', 'publica', 'Teléfono', 'telefono', 'Telefono', 'Phone']
+            # Normalizar el número de teléfono (eliminar '+' y espacios)
+            normalized_phone = phone_number.replace('+', '').replace(' ', '')
+            logger.info(f"Buscando invitados con teléfono normalizado: {normalized_phone}")
             
             for row in all_data:
-                # Intentar encontrar la columna correcta
-                phone_value = None
-                for col in possible_columns:
+                for col in ['Publica', 'publica', 'Teléfono', 'telefono', 'Telefono', 'Phone']:
                     if col in row:
-                        phone_value = str(row[col])
-                        break
-                
-                # Si encontramos el teléfono y coincide, incluir esta fila
-                if phone_value and phone_value == phone_number:
-                    filtered_data.append(row)
+                        # Normalizar el valor del teléfono en la hoja también
+                        db_phone = str(row[col]).replace('+', '').replace(' ', '')
+                        if db_phone == normalized_phone:
+                            filtered_data.append(row)
+                            break
         else:
             filtered_data = all_data
         
