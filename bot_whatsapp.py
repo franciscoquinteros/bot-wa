@@ -511,14 +511,14 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, categories=None):
     
 def count_guests(sheet, phone_number=None):
     """
-    Cuenta invitados, filtrados por número de teléfono en la columna 'Publica'
+    Cuenta invitados y recupera sus detalles, filtrados por número de teléfono en la columna 'Publica'
     
     Args:
         sheet: Objeto de hoja de Google Sheets
         phone_number (str): Número de teléfono del usuario que está consultando
         
     Returns:
-        dict: Diccionario con conteos por género y total
+        tuple: (dict con conteos por género, lista con detalles de invitados)
     """
     try:
         # Obtener todos los registros de la hoja
@@ -527,7 +527,7 @@ def count_guests(sheet, phone_number=None):
         # Verificar si hay datos
         if not all_data:
             logger.warning("La hoja no contiene datos o solo tiene encabezados")
-            return {'Total': 0}
+            return {'Total': 0}, []
         
         # Loguear las primeras filas para verificar la estructura
         logger.info(f"Muestra de datos: {all_data[:2]}")
@@ -540,13 +540,16 @@ def count_guests(sheet, phone_number=None):
             logger.info(f"Buscando invitados con teléfono normalizado: {normalized_phone}")
             
             for row in all_data:
+                # Intentar encontrar la columna correcta
+                phone_value = None
                 for col in ['Publica', 'publica', 'Teléfono', 'telefono', 'Telefono', 'Phone']:
                     if col in row:
-                        # Normalizar el valor del teléfono en la hoja también
-                        db_phone = str(row[col]).replace('+', '').replace(' ', '')
-                        if db_phone == normalized_phone:
-                            filtered_data.append(row)
-                            break
+                        phone_value = str(row[col]).replace('+', '').replace(' ', '')
+                        break
+                
+                # Si encontramos el teléfono y coincide, incluir esta fila
+                if phone_value and phone_value == normalized_phone:
+                    filtered_data.append(row)
         else:
             filtered_data = all_data
         
@@ -571,19 +574,20 @@ def count_guests(sheet, phone_number=None):
         categories['Total'] = len(filtered_data)
         
         logger.info(f"Conteo completo para {phone_number}: {categories}")
-        return categories
+        return categories, filtered_data
     except Exception as e:
         logger.error(f"Error al contar invitados: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        return {'Total': 0}
-    
-def generate_count_response(result, phone_number, sentiment):
+        return {'Total': 0}, []
+
+def generate_count_response(result, guests_data, phone_number, sentiment):
     """
-    Genera una respuesta personalizada para la consulta de invitados
+    Genera una respuesta personalizada para la consulta de invitados con información detallada
     
     Args:
         result (dict): Resultados del conteo de invitados
+        guests_data (list): Lista de diccionarios con detalles de invitados
         phone_number (str): Número de teléfono del usuario
         sentiment (str): Sentimiento detectado en el mensaje
         
@@ -610,13 +614,55 @@ def generate_count_response(result, phone_number, sentiment):
                 
                 base_response += f"- {display_category}: {count}\n"
         
-        base_response += f"\nTotal: {result.get('Total', 0)} invitados"
+        base_response += f"\nTotal: {result.get('Total', 0)} invitados\n\n"
+        
+        # Añadir información detallada de cada invitado agrupada por género
+        base_response += "📝 Detalle de invitados:\n\n"
+        
+        # Agrupar invitados por género
+        guests_by_gender = {}
+        for guest in guests_data:
+            gender = None
+            for col in ['Genero', 'genero', 'Género', 'género', 'Gender']:
+                if col in guest:
+                    gender = guest[col]
+                    break
+            
+            if not gender:
+                gender = "Sin categoría"
+                
+            if gender not in guests_by_gender:
+                guests_by_gender[gender] = []
+            
+            guests_by_gender[gender].append(guest)
+        
+        # Mostrar invitados por género
+        for gender, guests in guests_by_gender.items():
+            # Formatear género para mejor visualización
+            display_gender = gender
+            if gender.lower() == "masculino":
+                display_gender = "Hombres"
+            elif gender.lower() == "femenino":
+                display_gender = "Mujeres"
+                
+            base_response += f"◾️ {display_gender}:\n"
+            
+            for guest in guests:
+                # Obtener nombre y apellido
+                nombre = guest.get('Nombre', '')
+                apellido = guest.get('Apellido', '')
+                email = guest.get('Email', '')
+                
+                # Añadir detalles del invitado
+                base_response += f"   • {nombre} {apellido} - {email}\n"
+            
+            base_response += "\n"
     
     # Personalizar según sentimiento
     if sentiment == "positivo":
-        return f"{base_response}\n\n¡Gracias por tu interés! ¿Necesitas añadir más invitados?"
+        return f"{base_response}\n¡Gracias por tu interés! ¿Necesitas añadir más invitados?"
     elif sentiment == "negativo":
-        return f"{base_response}\n\n¿Hay algo específico en lo que pueda ayudarte con tu lista de invitados?"
+        return f"{base_response}\n¿Hay algo específico en lo que pueda ayudarte con tu lista de invitados?"
     else:
         return base_response
 
@@ -817,11 +863,11 @@ def whatsapp_reply():
                 response_text += " ¡Gracias por usar nuestro servicio! ¿Deseas agregar más invitados?"
             
         elif command_type == 'count':
-            # Llamar a la función mejorada de conteo
-            result = count_guests(sheet, sender_phone)
+            # Llamar a la función mejorada de conteo que devuelve también la información detallada
+            result, guests_data = count_guests(sheet, sender_phone)
             
-            # Usar la función especializada para generar respuesta de conteo
-            response_text = generate_count_response(result, sender_phone, sentiment)
+            # Usar la función especializada para generar respuesta detallada de conteo
+            response_text = generate_count_response(result, guests_data, sender_phone, sentiment)
             
         elif command_type == 'help':
             response_text = """📱 *Ayuda del sistema de invitados*
