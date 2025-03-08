@@ -1,5 +1,4 @@
-from flask import Flask, request
-from twilio.twiml.messaging_response import MessagingResponse
+from flask import Flask, request, jsonify
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import uuid
@@ -10,6 +9,8 @@ from functools import lru_cache
 import time
 import os
 import json
+import requests
+from twilio.rest import Client
 
 # Configuración de logging
 logging.basicConfig(
@@ -23,6 +24,28 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+# Configuración de Aisensy
+AISENSY_API_KEY = os.environ.get("AISENSY_API_KEY")
+AISENSY_INSTANCE_ID = os.environ.get("AISENSY_INSTANCE_ID")
+AISENSY_API_URL = f"https://backend.aisensy.com/api/v1/campaign/{AISENSY_INSTANCE_ID}/sendMessage"
+
+def send_twilio_message(phone_number, message):
+    try:
+        account_sid = os.environ.get('TWILIO_ACCOUNT_SID')
+        auth_token = os.environ.get('TWILIO_AUTH_TOKEN')
+        client = Client(account_sid, auth_token)
+        phone = phone_number.replace('whatsapp:', '').strip()
+        message = client.messages.create(
+            from_="whatsapp:+5491139164058",  # Tu número vinculado
+            body=message,
+            to=f"whatsapp:{phone}"
+        )
+        logger.info(f"Mensaje enviado a {phone}: {message.sid}")
+        return True
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        return False
 
 
 def analyze_with_rules(text):
@@ -725,7 +748,7 @@ def generate_response(command, result, phone_number=None, sentiment_analysis=Non
             base_response = f"✅ Se han registrado {count} invitados correctamente."
         
         # Personalizar según sentimiento
-        if sentiment == "positivo":
+        if sentiment == "positivo" and count > 0:
             return f"{base_response} ¡Gracias por usar nuestro servicio! ¿Deseas agregar más invitados?"
         elif sentiment == "negativo" and count > 0:
             return f"{base_response} Notamos cierta preocupación en tu mensaje. ¿Todo está bien con el registro?"
@@ -768,7 +791,7 @@ Para consultar:
             return help_text
     
     else:
-        # Si el comando no se reconoce, responder según el análisis de sentimiento
+        # Comando desconocido - usar la lógica de la IA
         if intent == "adición_invitado" or "agregar" in intent.lower():
             return """Para agregar invitados, puedes usar estos formatos:
 
@@ -798,169 +821,45 @@ IMPORTANTE: Cada invitado debe tener un correo electrónico asociado."""
         else:
             return """No pude entender tu mensaje. Puedes:
 
-- Agregar invitados enviando sus datos (nombre, apellido, email)
+- Agregar invitados enviando sus datos (nombre, apellido - email)
 - Consultar tu lista con "cuántos invitados"
 - Escribir "ayuda" para ver instrucciones detalladas"""
 
-# Rutas de la aplicación
 @app.route('/whatsapp', methods=['POST'])
 def whatsapp_reply():
     try:
-        # Obtener datos de la solicitud
-        incoming_msg = request.values.get('Body', '')
-        sender_phone = request.values.get('From', '').replace('whatsapp:', '')
+        data = request.form.to_dict()  # Twilio usa form-data
+        logger.info(f"Datos recibidos: {data}")
         
-        logger.info(f"Mensaje recibido de {sender_phone}: {incoming_msg[:50]}...")
+        sender_phone = data.get('From', '').replace('whatsapp:', '')
+        incoming_msg = data.get('Body', '')
         
-        # Analizar el sentimiento del mensaje
+        if not incoming_msg or not sender_phone:
+            return jsonify({"status": "error", "message": "Invalid payload"}), 400
+
+        # Tu lógica existente (sentimiento, parseo, invitados)
         sentiment_analysis = analyze_sentiment(incoming_msg)
-        logger.info(f"Análisis de sentimiento: {sentiment_analysis}")
-        sentiment = sentiment_analysis.get("sentiment", "neutral")
-        
-        # Procesar el mensaje con la lógica mejorada
         parsed = parse_message(incoming_msg)
         command_type = parsed['command_type']
         data = parsed['data']
         categories = parsed['categories']
-        
-        logger.info(f"Comando detectado: {command_type}")
-        if categories:
-            logger.info(f"Categorías detectadas: {list(categories.keys())}")
-        
-        # Si el análisis de IA detectó una intención específica, sobreescribir el comando
-        ai_intent = sentiment_analysis.get("intent", "").lower()
-        if command_type == "unknown" and ai_intent in ["adición_invitado", "consulta_invitados"]:
-            if ai_intent == "adición_invitado":
-                logger.info("IA detectó intención de añadir invitados, pero el formato no es el esperado")
-                command_type = "unknown_add"
-            elif ai_intent == "consulta_invitados":
-                logger.info("IA detectó intención de consultar invitados")
-                command_type = "count"
-                data = None
-        
-        # Obtener la conexión a la hoja
+
         sheet_conn = SheetsConnection()
         sheet = sheet_conn.get_sheet()
-        
-        # Ejecutar el comando correspondiente y generar respuesta
-        response_text = ""
-        
+
         if command_type == 'add_guests':
             result = add_guests_to_sheet(sheet, data, sender_phone, categories)
-            
-            # Generar respuesta para añadir invitados
-            if result == -1:  # Error de validación (emails faltantes)
-                response_text = "⚠️ No se pudieron registrar todos los invitados. Por favor, asegúrate de que cada invitado tenga un email asociado. El formato correcto es: Nombre Apellido - email@ejemplo.com"
-            elif result == 0:
-                response_text = "No se pudieron registrar invitados. Por favor asegúrate de incluir información clara como: Juan Pérez - juan@example.com"
-            elif result == 1:
-                response_text = "✅ Se ha registrado 1 invitado correctamente."
-            else:
-                response_text = f"✅ Se han registrado {result} invitados correctamente."
-                
-            # Personalizar según sentimiento
-            if sentiment == "positivo" and result > 0:
-                response_text += " ¡Gracias por usar nuestro servicio! ¿Deseas agregar más invitados?"
-            
+            response_text = generate_response(command_type, result, sender_phone, sentiment_analysis)
         elif command_type == 'count':
-            # Llamar a la función mejorada de conteo que devuelve también la información detallada
             result, guests_data = count_guests(sheet, sender_phone)
-            
-            # Usar la función especializada para generar respuesta detallada de conteo
-            response_text = generate_count_response(result, guests_data, sender_phone, sentiment)
-            
-        elif command_type == 'help':
-            response_text = """📱 *Ayuda del sistema de invitados*
-
-Para agregar invitados, puedes usar estos formatos:
-
-1) Por categorías:
-```
-Hombres:
-Juan Pérez - juan@example.com 
-Carlos Gómez - carlos@gmail.com
-
-Mujeres:
-María López - maria@example.com
-Ana Rodríguez - ana@gmail.com
-```
-
-2) En formato libre:
-```
-Juan Pérez - juan@example.com
-María López - maria@example.com
-```
-
-IMPORTANTE: Cada invitado debe tener un correo electrónico asociado.
-
-Para consultar tus invitados:
-- Escribe "cuántos invitados tengo" o "lista de invitados"
-- Solo verás los invitados que registraste con tu número de teléfono
-"""
+            response_text = generate_count_response(result, guests_data, sender_phone, sentiment_analysis['sentiment'])
         else:
-            # Comando desconocido - usar la lógica de la IA
-            if ai_intent == "adición_invitado" or "agregar" in ai_intent.lower():
-                response_text = """Para agregar invitados, puedes usar estos formatos:
+            response_text = generate_response(command_type, None, sender_phone, sentiment_analysis)
 
-1) Por categorías:
-Hombres:
-Juan Pérez - juan@example.com 
-Carlos Gómez - carlos@gmail.com
+        send_twilio_message(sender_phone, response_text)
+        return jsonify({"status": "success"}), 200
 
-2) En formato libre:
-Juan Pérez - juan@example.com
-María López - maria@example.com
-
-IMPORTANTE: Cada invitado debe tener un correo electrónico asociado."""
-            
-            elif ai_intent == "consulta_invitados" or "consultar" in ai_intent.lower():
-                response_text = "Para ver tus invitados, escribe 'cuántos invitados tengo' o 'lista de invitados'."
-            
-            elif sentiment == "positivo":
-                response_text = "¡Gracias por tu mensaje! Para gestionar tu lista de invitados, puedes añadir invitados enviando sus datos o consultar tu lista escribiendo 'cuántos invitados'."
-            
-            else:
-                response_text = """No pude entender tu mensaje. Puedes:
-
-- Agregar invitados enviando sus datos (nombre, apellido - email)
-- Consultar tu lista con "cuántos invitados"
-- Escribir "ayuda" para ver instrucciones detalladas"""
-        
-        # Enviar respuesta
-        resp = MessagingResponse()
-        msg = resp.message()
-        msg.body(response_text)
-        
-        logger.info(f"Respuesta enviada a {sender_phone}")
-        return str(resp)
-        
     except Exception as e:
-        logger.error(f"Error en el procesamiento del mensaje: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        
-        # Respuesta de error
-        resp = MessagingResponse()
-        msg = resp.message()
-        msg.body("Lo siento, hubo un error en el sistema. Inténtalo más tarde.")
-        return str(resp)
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    return {"status": "ok", "timestamp": datetime.now().isoformat()}
-
-@app.route('/test-ai', methods=['GET'])
-def test_ai():
-    """Ruta para probar el análisis de invitados con IA"""
-    text = request.args.get('text', 'Juan Pérez juan@example.com\nMaría Gómez')
-    lines = text.split('\n')
-    analysis = analyze_guests_with_ai(lines)
-    return {
-        "text": text,
-        "structured_data": analysis,
-        "openai_available": OPENAI_AVAILABLE
-    }
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+        logger.error(f"Error: {e}")
+        send_twilio_message(sender_phone, "Lo siento, hubo un error.")
+        return jsonify({"status": "error"}), 500
