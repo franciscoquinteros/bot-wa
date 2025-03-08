@@ -438,7 +438,7 @@ def parse_message(message):
 
 def parse_message_enhanced(message):
     """
-    Versión mejorada de parse_message que soporta el formato dividido
+    Versión mejorada de parse_message que detecta mejor el formato dividido
     de nombres y emails en líneas separadas
     
     Args:
@@ -447,99 +447,99 @@ def parse_message_enhanced(message):
     Returns:
         dict: Información sobre el comando, datos y categorías detectadas
     """
-    # Primero usar el parse_message original
-    parsed = parse_message(message)
-    
-    # Si ya se detectó un comando que no es add_guests, retornar
-    if parsed['command_type'] != 'add_guests' and parsed['command_type'] != 'unknown':
-        return parsed
-    
-    # Si no hay datos o hay categorías detectadas, el formato original funcionó
-    if not parsed['data'] or parsed['categories']:
-        return parsed
-    
-    # Verificar si podría ser el formato dividido
+    # Comprobación especial para formato separado antes de otras lógicas
     lines = message.strip().split('\n')
+    # Filtrar líneas vacías
     valid_lines = [line.strip() for line in lines if line.strip()]
     
-    # Contar potenciales nombres y emails
-    potential_emails = [line for line in valid_lines if '@' in line and '.' in line.split('@')[1]]
-    potential_names = [line for line in valid_lines if '@' not in line and len(line) > 1]
-    
-    # Si hay una cantidad similar de emails y nombres, podría ser el formato dividido
-    if len(potential_emails) > 0 and abs(len(potential_names) - len(potential_emails)) <= 1:
-        logger.info(f"Detectado posible formato dividido: {len(potential_names)} nombres, {len(potential_emails)} emails")
+    # Si tenemos suficientes líneas para analizar
+    if len(valid_lines) >= 4:  # Al menos algunos nombres y algunos emails
+        # Contar emails y no-emails
+        emails = [line for line in valid_lines if '@' in line and '.' in line.split('@')[1]]
+        non_emails = [line for line in valid_lines if '@' not in line]
         
-        return {
-            'command_type': 'add_guests_split',
-            'data': valid_lines,
-            'categories': None
-        }
+        # Detectar patrón: primero nombres, luego emails (con línea vacía opcional entre ellos)
+        if (len(emails) >= 1 and len(non_emails) >= 1 and 
+            abs(len(emails) - len(non_emails)) <= 2):  # Permitir pequeñas diferencias
+            
+            # Verificar que los emails están agrupados (no mezclados con nombres)
+            email_indices = [i for i, line in enumerate(valid_lines) if '@' in line]
+            if email_indices and max(email_indices) - min(email_indices) < len(emails):
+                # Los emails están agrupados, es probable que sea formato dividido
+                logger.info(f"Detectado formato dividido: {len(non_emails)} nombres, {len(emails)} emails")
+                
+                return {
+                    'command_type': 'add_guests_split',
+                    'data': valid_lines,
+                    'categories': None
+                }
     
-    # Si no es formato dividido, retornar el resultado original
-    return parsed
+    # Si no se detectó formato dividido, usar el parse_message original
+    return parse_message(message)
 
-def extract_guest_info_from_line(line, category=None):
+def extract_guests_from_split_format(lines):
     """
-    Extrae nombre, apellido, email y género de una línea de texto
+    Procesa un formato alternativo donde los nombres y emails vienen en líneas separadas
     
     Args:
-        line (str): Línea de texto con información del invitado
-        category (str, optional): Categoría a la que pertenece el invitado
+        lines (list): Lista de líneas con información de invitados
         
     Returns:
-        dict: Información estructurada del invitado
+        list: Lista de diccionarios con información estructurada de invitados
     """
-    # Valores predeterminados
-    guest_info = {
-        "nombre": "",
-        "apellido": "",
-        "email": "",
-        "genero": "Otro"
-    }
+    # Filtrar líneas vacías
+    lines = [line.strip() for line in lines if line.strip()]
     
-    # Asignar género basado en la categoría si está disponible
-    if category:
-        if category.lower() == "hombres":
-            guest_info["genero"] = "Masculino"
-        elif category.lower() == "mujeres":
-            guest_info["genero"] = "Femenino"
+    # Separar nombres y emails
+    emails = [line for line in lines if '@' in line and '.' in line.split('@')[1]]
+    names = [line for line in lines if '@' not in line and line.strip()]
     
-    # Buscar email
-    email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', line)
-    if email_match:
-        guest_info["email"] = email_match.group(0)
+    # Log para depuración
+    logger.info(f"Formato dividido - Nombres encontrados: {names}")
+    logger.info(f"Formato dividido - Emails encontrados: {emails}")
+    
+    # Verificar que haya al menos un nombre y un email
+    if not names or not emails:
+        logger.warning("No se encontraron suficientes nombres o emails")
+        return []
+    
+    # Si hay diferente cantidad, usar el mínimo
+    count = min(len(names), len(emails))
+    
+    # Crear la lista de invitados estructurada
+    guests = []
+    for i in range(count):
+        name_parts = names[i].strip().split()
         
-        # Dividir la línea en función del email para obtener el nombre
-        parts = line.split(email_match.group(0))
-        name_part = parts[0].strip()
+        # Extraer nombre y apellido
+        if len(name_parts) > 1:
+            nombre = name_parts[0]
+            apellido = " ".join(name_parts[1:])
+        else:
+            nombre = name_parts[0]
+            apellido = ""
         
-        # Eliminar caracteres especiales y separadores comunes
-        name_part = re.sub(r'[-:,]', ' ', name_part).strip()
+        # Determinar género basado en el nombre
+        genero = "Otro"
+        if nombre.lower().endswith("a") or nombre.lower().endswith("ia"):
+            genero = "Femenino"
+        elif nombre.lower().endswith("o") or nombre.lower().endswith("io"):
+            genero = "Masculino"
         
-        # Dividir el nombre en palabras
-        name_words = name_part.split()
-        if name_words:
-            guest_info["nombre"] = name_words[0]
-            if len(name_words) > 1:
-                guest_info["apellido"] = " ".join(name_words[1:])
-    else:
-        # Si no hay email, tratar toda la línea como nombre
-        words = line.split()
-        if words:
-            guest_info["nombre"] = words[0]
-            if len(words) > 1:
-                guest_info["apellido"] = " ".join(words[1:])
+        # Crear el objeto invitado
+        guest = {
+            "nombre": nombre,
+            "apellido": apellido,
+            "email": emails[i],
+            "genero": genero
+        }
+        
+        # Log para depuración
+        logger.info(f"Creado invitado: {nombre} {apellido} - {emails[i]} ({genero})")
+        
+        guests.append(guest)
     
-    # Intentar determinar género si no se ha establecido por categoría
-    if guest_info["genero"] == "Otro":
-        nombre = guest_info["nombre"].lower()
-        if nombre.endswith("a") or nombre.endswith("ia"):
-            guest_info["genero"] = "Femenino"
-        elif nombre.endswith("o") or nombre.endswith("io"):
-            guest_info["genero"] = "Masculino"
-    
-    return guest_info
+    return guests
 
 def extract_guests_manually_enhanced(lines, categories=None, command_type='add_guests'):
     """
@@ -1044,8 +1044,9 @@ IMPORTANTE: Cada invitado debe tener un correo electrónico asociado."""
 - Consultar tu lista con "cuántos invitados"
 - Escribir "ayuda" para ver instrucciones detalladas"""
 
+# Modificación a la función principal de whatsapp_reply
 @app.route('/whatsapp', methods=['POST'])
-def whatsapp_reply_enhanced():
+def whatsapp_reply():
     sender_phone = None  # Define la variable al inicio
     try:
         data = request.form.to_dict()
@@ -1059,16 +1060,45 @@ def whatsapp_reply_enhanced():
             return jsonify({"status": "error", "message": "Invalid payload"}), 400
 
         sentiment_analysis = analyze_sentiment(incoming_msg)
-        parsed = parse_message_enhanced(incoming_msg)  # Usar la versión mejorada
+        
+        # Detectar formato dividido primero
+        parsed = parse_message_enhanced(incoming_msg)
         command_type = parsed['command_type']
         data = parsed['data']
         categories = parsed['categories']
+        
+        logger.info(f"Comando detectado: {command_type}")
 
         sheet_conn = SheetsConnection()
         sheet = sheet_conn.get_sheet()
 
-        if command_type == 'add_guests' or command_type == 'add_guests_split':
-            result = add_guests_to_sheet_enhanced(sheet, data, sender_phone, categories, command_type)
+        if command_type == 'add_guests_split':
+            # Para formato dividido, usar el procesamiento específico
+            structured_guests = extract_guests_from_split_format(data)
+            
+            # Crear filas para añadir a la hoja
+            rows_to_add = []
+            for guest in structured_guests:
+                rows_to_add.append([
+                    guest.get("nombre", ""),
+                    guest.get("apellido", ""),
+                    guest.get("email", ""),
+                    guest.get("genero", "Otro"),
+                    sender_phone
+                ])
+            
+            # Añadir a la hoja
+            if rows_to_add:
+                sheet.append_rows(rows_to_add)
+                result = len(rows_to_add)
+                logger.info(f"Agregados {result} invitados (formato dividido) para {sender_phone}")
+            else:
+                result = 0
+                
+            response_text = generate_response('add_guests', result, sender_phone, sentiment_analysis)
+            
+        elif command_type == 'add_guests':
+            result = add_guests_to_sheet(sheet, data, sender_phone, categories)
             response_text = generate_response(command_type, result, sender_phone, sentiment_analysis)
         elif command_type == 'count':
             result, guests_data = count_guests(sheet, sender_phone)
@@ -1083,6 +1113,8 @@ def whatsapp_reply_enhanced():
 
     except Exception as e:
         logger.error(f"Error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         if sender_phone:
-            send_twilio_message(sender_phone, "Lo siento, hubo un error.")
+            send_twilio_message(sender_phone, "Lo siento, hubo un error procesando tu mensaje.")
         return jsonify({"status": "error"}), 500
