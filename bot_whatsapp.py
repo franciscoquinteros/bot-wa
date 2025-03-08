@@ -34,17 +34,20 @@ def send_twilio_message(phone_number, message):
     try:
         account_sid = os.environ.get('TWILIO_ACCOUNT_SID')
         auth_token = os.environ.get('TWILIO_AUTH_TOKEN')
+        if not account_sid or not auth_token:
+            logger.error("Credenciales de Twilio no configuradas")
+            raise ValueError("Credenciales de Twilio no configuradas")
         client = Client(account_sid, auth_token)
         phone = phone_number.replace('whatsapp:', '').strip()
         message = client.messages.create(
-            from_="whatsapp:+5491139164058",  # Tu número vinculado
+            from_="whatsapp:+5491139164058",
             body=message,
             to=f"whatsapp:{phone}"
         )
         logger.info(f"Mensaje enviado a {phone}: {message.sid}")
         return True
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Error al enviar mensaje: {e}")
         return False
 
 
@@ -827,17 +830,18 @@ IMPORTANTE: Cada invitado debe tener un correo electrónico asociado."""
 
 @app.route('/whatsapp', methods=['POST'])
 def whatsapp_reply():
+    sender_phone = None  # Define la variable al inicio
     try:
-        data = request.form.to_dict()  # Twilio usa form-data
+        data = request.form.to_dict()
         logger.info(f"Datos recibidos: {data}")
         
         sender_phone = data.get('From', '').replace('whatsapp:', '')
         incoming_msg = data.get('Body', '')
         
         if not incoming_msg or not sender_phone:
+            logger.error("Payload inválido")
             return jsonify({"status": "error", "message": "Invalid payload"}), 400
 
-        # Tu lógica existente (sentimiento, parseo, invitados)
         sentiment_analysis = analyze_sentiment(incoming_msg)
         parsed = parse_message(incoming_msg)
         command_type = parsed['command_type']
@@ -856,10 +860,13 @@ def whatsapp_reply():
         else:
             response_text = generate_response(command_type, None, sender_phone, sentiment_analysis)
 
-        send_twilio_message(sender_phone, response_text)
+        if not send_twilio_message(sender_phone, response_text):
+            logger.error("Fallo al enviar mensaje de respuesta")
+            return jsonify({"status": "error", "message": "Failed to send response"}), 500
         return jsonify({"status": "success"}), 200
 
     except Exception as e:
         logger.error(f"Error: {e}")
-        send_twilio_message(sender_phone, "Lo siento, hubo un error.")
+        if sender_phone:
+            send_twilio_message(sender_phone, "Lo siento, hubo un error.")
         return jsonify({"status": "error"}), 500
