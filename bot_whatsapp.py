@@ -34,17 +34,50 @@ def send_twilio_message(phone_number, message):
     try:
         account_sid = os.environ.get('TWILIO_ACCOUNT_SID')
         auth_token = os.environ.get('TWILIO_AUTH_TOKEN')
+        twilio_whatsapp = os.environ.get('TWILIO_WHATSAPP_NUMBER')
+        
         if not account_sid or not auth_token:
             logger.error("Credenciales de Twilio no configuradas")
             raise ValueError("Credenciales de Twilio no configuradas")
+        
+        # Si no hay número de Twilio configurado, intentar usar el número predeterminado
+        if not twilio_whatsapp:
+            # Verificar si está iniciando con whatsapp:
+            if not phone_number.startswith('whatsapp:'):
+                destination = f"whatsapp:{phone_number}"
+            else:
+                destination = phone_number
+                
+            # Crear una respuesta de texto directamente
+            return jsonify({
+                "status": "success",
+                "message": "Response sent",
+                "response": {
+                    "message": message
+                }
+            }), 200
+        
+        # Si hay número configurado, usar Twilio normalmente
         client = Client(account_sid, auth_token)
-        phone = phone_number.replace('whatsapp:', '').strip()
-        message = client.messages.create(
-            from_="whatsapp:+5491139164058",
+        
+        # Limpiar el número de teléfono
+        if phone_number.startswith('whatsapp:'):
+            phone = phone_number.replace('whatsapp:', '').strip()
+        else:
+            phone = phone_number.strip()
+            
+        # Asegurarse de que el número comience con +
+        if not phone.startswith('+'):
+            phone = f"+{phone}"
+            
+        # Enviar el mensaje
+        twilio_message = client.messages.create(
+            from_=f"whatsapp:{twilio_whatsapp}",
             body=message,
             to=f"whatsapp:{phone}"
         )
-        logger.info(f"Mensaje enviado a {phone}: {message.sid}")
+        
+        logger.info(f"Mensaje enviado a {phone}: {twilio_message.sid}")
         return True
     except Exception as e:
         logger.error(f"Error al enviar mensaje: {e}")
@@ -128,15 +161,20 @@ def analyze_with_rules(text):
 # Configuración de OpenAI (con manejo de importación segura)
 OPENAI_AVAILABLE = False
 try:
-    import openai
-    # Inicializar sin proxies
-    openai.api_key = os.environ.get("OPENAI_API_KEY")
-    # Verificar si la clave está disponible
-    OPENAI_AVAILABLE = bool(openai.api_key)
-    logger.info(f"OpenAI está {'disponible' if OPENAI_AVAILABLE else 'NO disponible (falta API key)'}")
+    from openai import OpenAI  # Cambiar la importación para la nueva versión
+    
+    # Verificar si la clave API está disponible
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if api_key:
+        # Inicializar el cliente de forma correcta
+        client = OpenAI(api_key=api_key)
+        OPENAI_AVAILABLE = True
+        logger.info("OpenAI está disponible")
+    else:
+        logger.warning("OpenAI NO disponible (falta API key)")
 except ImportError:
     logger.warning("Módulo OpenAI no está instalado. Se usará análisis básico.")
-    openai = None
+    client = None
 
 # Manejo de la conexión con Google Sheets
 class SheetsConnection:
@@ -177,12 +215,12 @@ def analyze_sentiment(text):
         dict: Diccionario con análisis del sentimiento e intención
     """
     try:
-        if not OPENAI_AVAILABLE or openai is None:
+        if not OPENAI_AVAILABLE or client is None:
             logger.warning("OpenAI no está disponible, usando análisis básico")
             return analyze_with_rules(text)
             
         # Usar la API de OpenAI para analizar el sentimiento
-        response = openai.chat.completions.create(
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "Eres un asistente que analiza mensajes. Responde solo con un JSON que contiene: sentiment (positivo, negativo o neutral), intent (pregunta, solicitud, queja, adición_invitado, consulta_invitados, otro), y urgency (baja, media, alta)."},
@@ -203,6 +241,7 @@ def analyze_sentiment(text):
         # En caso de error, usar análisis basado en reglas
         return analyze_with_rules(text)
 
+# Actualizar la función analyze_guests_with_ai también
 def analyze_guests_with_ai(guest_list, category_info=None):
     """
     Usa OpenAI para extraer y estructurar la información de los invitados
@@ -216,7 +255,7 @@ def analyze_guests_with_ai(guest_list, category_info=None):
         list: Lista de diccionarios con información estructurada de invitados
     """
     try:
-        if not OPENAI_AVAILABLE or openai is None:
+        if not OPENAI_AVAILABLE or client is None:
             logger.warning("OpenAI no está disponible, usando análisis básico para invitados")
             return None
         
@@ -252,7 +291,7 @@ def analyze_guests_with_ai(guest_list, category_info=None):
         Responde solo con un array JSON. Cada elemento del array debe corresponder a un invitado único con su email.
         """
         
-        response = openai.chat.completions.create(
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "Eres un asistente especializado en extraer información estructurada de textos."},
@@ -660,6 +699,98 @@ def extract_guests_manually(lines, categories=None):
                 guests.append(guest_info)
     
     return guests
+
+def extract_guest_info_from_line(line, category=None):
+    """
+    Extrae la información de un invitado a partir de una línea de texto
+    
+    Args:
+        line (str): Línea con información del invitado (nombre - email)
+        category (str, optional): Categoría del invitado (Hombres, Mujeres, etc.)
+        
+    Returns:
+        dict: Diccionario con información estructurada del invitado
+    """
+    # Inicializar el diccionario con valores predeterminados
+    guest_info = {
+        "nombre": "",
+        "apellido": "",
+        "email": "",
+        "genero": "Otro"
+    }
+    
+    # Ignorar líneas vacías o demasiado cortas
+    if not line or len(line.strip()) < 3:
+        return guest_info
+    
+    # Detectar si hay un separador entre nombre y email
+    separator = None
+    if " - " in line:
+        separator = " - "
+    elif "-" in line:
+        separator = "-"
+    elif ":" in line:
+        separator = ":"
+    
+    # Extraer nombre y email según el separador
+    if separator:
+        parts = line.split(separator, 1)
+        if len(parts) == 2:
+            name_part = parts[0].strip()
+            email_part = parts[1].strip()
+            
+            # Asignar email si parece válido (tiene @ y un punto después)
+            if "@" in email_part and "." in email_part.split("@")[1]:
+                guest_info["email"] = email_part
+            
+            # Procesar nombre y apellido
+            name_parts = name_part.split()
+            if name_parts:
+                guest_info["nombre"] = name_parts[0]
+                if len(name_parts) > 1:
+                    guest_info["apellido"] = " ".join(name_parts[1:])
+        else:
+            # Si no hay dos partes, intentar detectar el email directamente
+            if "@" in line and "." in line.split("@")[1]:
+                email_match = re.search(r'\S+@\S+\.\S+', line)
+                if email_match:
+                    guest_info["email"] = email_match.group(0)
+                    # Quitar el email de la línea para extraer el nombre
+                    name_part = line.replace(guest_info["email"], "").strip()
+                    name_parts = name_part.split()
+                    if name_parts:
+                        guest_info["nombre"] = name_parts[0]
+                        if len(name_parts) > 1:
+                            guest_info["apellido"] = " ".join(name_parts[1:])
+    else:
+        # Si no hay separador, intentar extraer email directamente
+        if "@" in line and "." in line.split("@")[1]:
+            email_match = re.search(r'\S+@\S+\.\S+', line)
+            if email_match:
+                guest_info["email"] = email_match.group(0)
+                # Quitar el email de la línea para extraer el nombre
+                name_part = line.replace(guest_info["email"], "").strip()
+                name_parts = name_part.split()
+                if name_parts:
+                    guest_info["nombre"] = name_parts[0]
+                    if len(name_parts) > 1:
+                        guest_info["apellido"] = " ".join(name_parts[1:])
+    
+    # Si hay información de categoría, usarla para determinar el género
+    if category:
+        if category.lower() in ["hombre", "hombres", "masculino"]:
+            guest_info["genero"] = "Masculino"
+        elif category.lower() in ["mujer", "mujeres", "femenino"]:
+            guest_info["genero"] = "Femenino"
+    else:
+        # Intentar determinar el género a partir del nombre
+        nombre = guest_info["nombre"].lower()
+        if nombre.endswith("a") or nombre.endswith("ia"):
+            guest_info["genero"] = "Femenino"
+        elif nombre.endswith("o") or nombre.endswith("io"):
+            guest_info["genero"] = "Masculino"
+    
+    return guest_info
 
 def add_guests_to_sheet(sheet, guests_data, phone_number, categories=None):
     """
