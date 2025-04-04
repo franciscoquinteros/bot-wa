@@ -626,7 +626,7 @@ def add_guests_to_sheet_enhanced(sheet, guests_data, phone_number, categories=No
         structured_guests = None
         
         # Primero intentar usar IA para procesar los datos (solo para formato estándar)
-        if command_type == 'add_guests' and OPENAI_AVAILABLE and openai:
+        if command_type == 'add_guests' and OPENAI_AVAILABLE and client:
             structured_guests = analyze_guests_with_ai(guests_data, categories)
             
         # Si la IA falla, no está disponible, o es formato dividido, usar procesamiento manual
@@ -817,7 +817,7 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, categories=None):
         structured_guests = None
         
         # Primero intentar usar IA para procesar los datos
-        if OPENAI_AVAILABLE and openai:
+        if OPENAI_AVAILABLE and client:
             structured_guests = analyze_guests_with_ai(guests_data, categories)
             
         # Si la IA falla o no está disponible, usar procesamiento manual
