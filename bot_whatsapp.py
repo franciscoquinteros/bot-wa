@@ -116,7 +116,19 @@ def analyze_with_rules(text):
             r"(?i)^help$",
             r"(?i)cómo\s+funciona",
             r"(?i)cómo\s+usar"
-        ]
+        ],
+        "saludo": [  # Nueva categoría de intención para saludos
+        r"(?i)^hola$",
+        r"(?i)^buenos días$",
+        r"(?i)^buenas tardes$",
+        r"(?i)^buenas noches$",
+        r"(?i)^saludos$",
+        r"(?i)^hi$",
+        r"(?i)^hey$",
+        r"(?i)^hello$",
+        r"(?i)^ola$",
+        r"(?i)^buen día$"
+    ]
     }
     
     # Detectar la intención según los patrones
@@ -406,6 +418,27 @@ def parse_message(message):
         dict: Información sobre el comando, datos y categorías detectadas
     """
     message = message.strip()
+
+    saludo_patterns = [
+        r'^(?i)hola$',
+        r'^(?i)buenos días$',
+        r'^(?i)buenas tardes$',
+        r'^(?i)buenas noches$',
+        r'^(?i)saludos$',
+        r'^(?i)hi$',
+        r'^(?i)hey$',
+        r'^(?i)hello$',
+        r'^(?i)ola$',
+        r'^(?i)buen día$'
+    ]
+    
+    for pattern in saludo_patterns:
+        if re.search(pattern, message):
+            return {
+                'command_type': 'saludo',
+                'data': None,
+                'categories': None
+            }
     
     # Verificar si es una consulta de conteo
     count_patterns = [
@@ -1032,9 +1065,37 @@ def generate_response_enhanced(command, result, phone_number=None, sentiment_ana
     Returns:
         str: Respuesta personalizada
     """
+
+    if command == 'saludo':
+        # Aquí puedes personalizar el mensaje de bienvenida/instrucciones
+        welcome_text = """👋 ¡Hola! Bienvenido al sistema de gestión de invitados. 
+
+Puedo ayudarte con la administración de tu lista de invitados. Aquí tienes lo que puedes hacer:
+
+1️⃣ *Agregar invitados*: 
+   Envía los datos en cualquiera de estos formatos:
+   • Juan Pérez - juan@ejemplo.com
+   • O por categorías:
+     Hombres:
+     Juan Pérez - juan@ejemplo.com
+     Mujeres:
+     María López - maria@ejemplo.com
+
+2️⃣ *Consultar invitados*:
+   • Escribe "cuántos invitados" o "lista de invitados"
+
+3️⃣ *Ayuda*:
+   • Escribe "ayuda" para ver estas instrucciones de nuevo
+
+¿En qué puedo ayudarte hoy?"""
+        
+        return welcome_text
+        
+    elif command == 'count':
+    
     # Normalizar el comando para add_guests
-    if command == 'add_guests_split':
-        command = 'add_guests'
+        if command == 'add_guests_split':
+            command = 'add_guests'
         
     # Usar la función original
     return generate_response(command, result, phone_number, sentiment_analysis)
@@ -1203,7 +1264,9 @@ def whatsapp_reply():
         sheet_conn = SheetsConnection()
         sheet = sheet_conn.get_sheet()
 
-        if command_type == 'add_guests_split':
+        if command_type == 'saludo':
+            response_text = generate_response(command_type, None, sender_phone, sentiment_analysis)
+        elif command_type == 'add_guests_split':
             # Para formato dividido, usar el procesamiento específico
             structured_guests = extract_guests_from_split_format(data)
             
