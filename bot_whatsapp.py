@@ -117,18 +117,18 @@ def analyze_with_rules(text):
             r"(?i)cómo\s+funciona",
             r"(?i)cómo\s+usar"
         ],
-        "saludo": [  # Nueva categoría de intención para saludos
-        r"(?i)^hola$",
-        r"(?i)^buenos días$",
-        r"(?i)^buenas tardes$",
-        r"(?i)^buenas noches$",
-        r"(?i)^saludos$",
-        r"(?i)^hi$",
-        r"(?i)^hey$",
-        r"(?i)^hello$",
-        r"(?i)^ola$",
-        r"(?i)^buen día$"
-    ]
+        "saludo": [
+            r"(?i)^hola$",
+            r"(?i)^buenos días$",
+            r"(?i)^buenas tardes$",
+            r"(?i)^buenas noches$",
+            r"(?i)^saludos$",
+            r"(?i)^hi$",
+            r"(?i)^hey$",
+            r"(?i)^hello$",
+            r"(?i)^ola$",
+            r"(?i)^buen día$"
+        ]
     }
     
     # Detectar la intención según los patrones
@@ -418,18 +418,19 @@ def parse_message(message):
         dict: Información sobre el comando, datos y categorías detectadas
     """
     message = message.strip()
-
+    
+    # Verificar si es un saludo simple
     saludo_patterns = [
-        r'^(?i)hola$',
-        r'^(?i)buenos días$',
-        r'^(?i)buenas tardes$',
-        r'^(?i)buenas noches$',
-        r'^(?i)saludos$',
-        r'^(?i)hi$',
-        r'^(?i)hey$',
-        r'^(?i)hello$',
-        r'^(?i)ola$',
-        r'^(?i)buen día$'
+        r'(?i)^hola$',
+        r'(?i)^buenos días$',
+        r'(?i)^buenas tardes$',
+        r'(?i)^buenas noches$',
+        r'(?i)^saludos$',
+        r'(?i)^hi$',
+        r'(?i)^hey$',
+        r'(?i)^hello$',
+        r'(?i)^ola$',
+        r'(?i)^buen día$'
     ]
     
     for pattern in saludo_patterns:
@@ -519,6 +520,28 @@ def parse_message_enhanced(message):
     Returns:
         dict: Información sobre el comando, datos y categorías detectadas
     """
+    # Comprobar primero si es un saludo
+    saludo_patterns = [
+        r'(?i)^hola$',
+        r'(?i)^buenos días$',
+        r'(?i)^buenas tardes$',
+        r'(?i)^buenas noches$',
+        r'(?i)^saludos$',
+        r'(?i)^hi$',
+        r'(?i)^hey$',
+        r'(?i)^hello$',
+        r'(?i)^ola$',
+        r'(?i)^buen día$'
+    ]
+    
+    for pattern in saludo_patterns:
+        if re.search(pattern, message.strip()):
+            return {
+                'command_type': 'saludo',
+                'data': None,
+                'categories': None
+            }
+    
     # Comprobación especial para formato separado antes de otras lógicas
     lines = message.strip().split('\n')
     # Filtrar líneas vacías
@@ -1052,9 +1075,9 @@ def generate_count_response(result, guests_data, phone_number, sentiment):
     else:
         return base_response
     
-def generate_response_enhanced(command, result, phone_number=None, sentiment_analysis=None):
+def generate_response(command, result, phone_number=None, sentiment_analysis=None):
     """
-    Versión mejorada de generate_response que soporta el comando add_guests_split
+    Genera respuestas personalizadas basadas en el comando, resultado y análisis de sentimiento
     
     Args:
         command (str): Tipo de comando detectado
@@ -1065,9 +1088,21 @@ def generate_response_enhanced(command, result, phone_number=None, sentiment_ana
     Returns:
         str: Respuesta personalizada
     """
-
+    # Si no hay análisis de sentimiento, usar comportamiento original
+    if sentiment_analysis is None:
+        sentiment_analysis = {
+            "sentiment": "neutral",
+            "intent": "otro",
+            "urgency": "media"
+        }
+    
+    sentiment = sentiment_analysis.get("sentiment", "neutral")
+    intent = sentiment_analysis.get("intent", "otro")
+    urgency = sentiment_analysis.get("urgency", "media")
+    
+    # Para comandos específicos, mantener la lógica original pero añadir personalización
     if command == 'saludo':
-        # Aquí puedes personalizar el mensaje de bienvenida/instrucciones
+        # Mensaje de bienvenida e instrucciones
         welcome_text = """👋 ¡Hola! Bienvenido al sistema de gestión de invitados. 
 
 Puedo ayudarte con la administración de tu lista de invitados. Aquí tienes lo que puedes hacer:
