@@ -182,6 +182,7 @@ class SheetsConnection:
     _instance = None
     _last_refresh = 0
     _refresh_interval = 1800  # 30 minutos
+    _phone_cache_interval = 300
 
     def __new__(cls):
         if cls._instance is None or time.time() - cls._last_refresh > cls._refresh_interval:
