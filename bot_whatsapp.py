@@ -193,34 +193,56 @@ class SheetsConnection:
     def _connect(self):
         try:
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-            # Asegúrate que la ruta al archivo de credenciales sea correcta
             creds_path = os.environ.get("GOOGLE_CREDENTIALS_PATH", "/etc/secrets/google-credentials.json")
             creds = ServiceAccountCredentials.from_json_keyfile_name(creds_path, scope)
             self.client = gspread.authorize(creds)
-            # --- MODIFICADO: Asegúrate que el nombre del sheet sea el correcto ---
-            # Necesitarás una hoja para los invitados. Puedes tener otra para los eventos.
             self.spreadsheet = self.client.open("n8n sheet") # Nombre del Archivo Google Sheet
-            self.guest_sheet = self.spreadsheet.worksheet("Invitados") # Nombre de la Hoja para invitados
-            self.event_sheet = self.spreadsheet.worksheet("Eventos") # Si tienes hoja separada para eventos
-            logger.info("Conexión con Google Sheets establecida con éxito")
-        except gspread.exceptions.SpreadsheetNotFound:
-            logger.error(f"Error: No se encontró el Google Sheet llamado 'n8n sheet'. Verifica el nombre.")
-            raise
 
-        # ---> NUEVO: Verificar existencia hoja Telefonos <---
-        try:
-            self.phone_sheet_obj = self.spreadsheet.worksheet("Telefonos")
-        except gspread.exceptions.WorksheetNotFound:
+            # --- Obtener hojas principales (manejar si no existen) ---
+            try:
+                self.guest_sheet = self.spreadsheet.worksheet("Invitados")
+            except gspread.exceptions.WorksheetNotFound:
+                 logger.error("Hoja 'Invitados' no encontrada. Intentando crearla.")
+                 # Ajusta las columnas/headers según necesites
+                 try:
+                    self.guest_sheet = self.spreadsheet.add_worksheet(title="Invitados", rows="1", cols="7")
+                    self.guest_sheet.update('A1:G1', [['Nombre', 'Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp']])
+                 except Exception as create_err:
+                    logger.error(f"No se pudo crear la hoja 'Invitados': {create_err}")
+                    self.guest_sheet = None # Marcar como no disponible
+
+            try:
+                self.event_sheet = self.spreadsheet.worksheet("Eventos")
+            except gspread.exceptions.WorksheetNotFound:
+                 logger.warning("Hoja 'Eventos' no encontrada. Funcionalidad de eventos limitada.")
+                 self.event_sheet = None # Marcar como no disponible
+
+            # --- Verificar hoja Telefonos ---
+            try:
+                self.phone_sheet_obj = self.spreadsheet.worksheet("Telefonos")
+                logger.info("Hoja 'Telefonos' encontrada.")
+            except gspread.exceptions.WorksheetNotFound:
                 logger.error("¡CRÍTICO! Hoja 'Telefonos' para autorización no encontrada. El bot no responderá a nadie.")
-                self.phone_sheet_obj = None # Important for the check later
-                self._phone_cache = None
-                self._phone_cache_last_refresh = 0
-                logger.info("Conexión con Google Sheets establecida/verificada.")
+                self.phone_sheet_obj = None
+
+            # ---> ¡AQUÍ! Inicializar atributos de caché en la instancia SIEMPRE <---
+            self._phone_cache = None
+            self._phone_cache_last_refresh = 0
+            # _phone_cache_interval es constante de clase, está bien así.
+
+            logger.info("Conexión y configuración inicial de SheetsConnection completada.")
+
+        # Errores CRÍTICOS de conexión principal van aquí
         except gspread.exceptions.SpreadsheetNotFound:
             logger.error(f"Error CRÍTICO: No se encontró el Google Sheet llamado 'n8n sheet'. Verifica el nombre.")
-            raise
+            # Decide si relanzar el error o manejarlo de otra forma
+            raise # Detiene la aplicación si no puede conectar
+        except gspread.exceptions.APIError as api_err:
+             logger.error(f"Error CRÍTICO de API de Google al conectar: {api_err}")
+             raise
         except Exception as e:
-            logger.error(f"Error CRÍTICO al conectar con Google Sheets: {e}")
+            # Otro error inesperado durante la conexión inicial
+            logger.error(f"Error CRÍTICO inesperado al conectar con Google Sheets: {e}")
             raise
         
     def get_sheet(self):
@@ -254,61 +276,40 @@ class SheetsConnection:
     
     # --- NUEVO: Método para obtener y cachear números autorizados ---
     def get_authorized_phones(self):
-        """
-        Obtiene la lista de números de teléfono autorizados desde la hoja 'Telefonos'.
-        Utiliza un caché simple para reducir las llamadas a la API.
-
-        Returns:
-            set: Un conjunto de números de teléfono normalizados (solo dígitos).
-                 Devuelve un conjunto vacío si la hoja no existe o hay un error.
-        """
         now = time.time()
-        # Check cache first
+        # Ahora self._phone_cache sí existirá (inicialmente None)
         if self._phone_cache is not None and now - self._phone_cache_last_refresh < self._phone_cache_interval:
-            # logger.debug("Usando caché de números de teléfono autorizados.")
-            return self._phone_cache
+             return self._phone_cache
 
-        logger.info("Refrescando caché de números de teléfono autorizados desde Google Sheets...")
+        logger.info("Refrescando caché de números autorizados...")
         authorized_phones_set = set()
         try:
-            # Re-fetch the sheet object in case the connection was refreshed
-            phone_sheet = self.spreadsheet.worksheet("Telefonos")
-
+            # Usar el objeto ya obtenido (o None) en _connect
+            phone_sheet = self.phone_sheet_obj
             if phone_sheet:
-                # Asume que los números están en la primera columna (A)
-                # Cambia el índice (1) si están en otra columna
-                # Skips the first row (header) using [1:]
-                phone_list_raw = phone_sheet.col_values(1)[1:]
-
+                phone_list_raw = phone_sheet.col_values(1)[1:] # Asume Col A, skip header
                 for phone in phone_list_raw:
-                    if phone: # Ignorar celdas vacías
-                        # Normalizar: quitar '+' y espacios, luego quedarse solo con dígitos
+                    if phone:
                         normalized_phone = re.sub(r'\D', '', str(phone))
-                        if normalized_phone: # Asegurarse que no quede vacío después de normalizar
+                        if normalized_phone:
                             authorized_phones_set.add(normalized_phone)
-
                 logger.info(f"Cargados {len(authorized_phones_set)} números autorizados.")
-                self._phone_cache = authorized_phones_set
-                self._phone_cache_last_refresh = now
-                return self._phone_cache
             else:
-                logger.error("La hoja 'Telefonos' no se pudo obtener durante la carga de números.")
-                self._phone_cache = set() # Empty set if sheet is gone
-                self._phone_cache_last_refresh = now
-                return self._phone_cache
+                 logger.error("No se puede refrescar caché porque hoja 'Telefonos' no está disponible.")
+                 # Mantenemos el caché vacío o el anterior si hubo error temporal
+                 authorized_phones_set = self._phone_cache if self._phone_cache is not None else set()
 
-        except gspread.exceptions.WorksheetNotFound:
-             logger.error("Hoja 'Telefonos' no encontrada al intentar leer números. Nadie estará autorizado.")
-             self._phone_cache = set() # Cache empty set
-             self._phone_cache_last_refresh = now
-             return self._phone_cache
+
+            self._phone_cache = authorized_phones_set
+            self._phone_cache_last_refresh = now
+            return self._phone_cache
+
+        # Manejar errores específicos al leer la hoja de teléfonos
         except gspread.exceptions.APIError as e:
-             logger.error(f"Error de API al leer la hoja 'Telefonos': {e}")
-             # Return potentially stale cache or empty set
+             logger.error(f"Error de API al leer la hoja 'Telefonos': {e}. Usando caché anterior si existe.")
              return self._phone_cache if self._phone_cache is not None else set()
         except Exception as e:
-            logger.error(f"Error inesperado al obtener números autorizados: {e}")
-            # Return potentially stale cache or empty set
+            logger.error(f"Error inesperado al obtener números autorizados: {e}. Usando caché anterior si existe.")
             return self._phone_cache if self._phone_cache is not None else set()
 
 
