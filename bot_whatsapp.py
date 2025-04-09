@@ -1257,9 +1257,10 @@ Puedo ayudarte con la administración de tu lista de invitados. Aquí tienes lo 
 @app.route('/whatsapp', methods=['POST'])
 def whatsapp_reply():
     global user_states # Accedemos al diccionario global de estados
-    response_text = "Lo siento, hubo un error procesando tu mensaje. Intenta de nuevo." # Mensaje por defecto
+    response_text = None
     sender_phone_raw = None
     sender_phone_normalized = None # Para usar como key en user_states
+    sheet_conn = None
 
     try:
         data = request.form.to_dict()
@@ -1300,149 +1301,149 @@ def whatsapp_reply():
 
         logger.info(f"Usuario: {sender_phone_normalized}, Estado Actual: {current_state}, Evento Seleccionado: {selected_event}")
 
-        # Conectar a Google Sheets
-        sheet_conn = SheetsConnection()
-        guest_sheet = sheet_conn.guest_sheet # <--- Correct: Access attribute directly
-
-        # --- Lógica basada en Estados ---
-
-        if current_state == STATE_INITIAL:
-            # Esperando un saludo para iniciar
-            # Usar el parseador para detectar saludo de forma robusta
-            parsed_command = parse_message_enhanced(incoming_msg)
-            if parsed_command['command_type'] == 'saludo':
-                 # PASO 2: Responder con eventos disponibles
-                 available_events = sheet_conn.get_available_events()
-                 if not available_events:
-                     response_text = "¡Hola! 👋 No encontré eventos disponibles para anotar invitados en este momento."
-                     user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None} # Reset state
-                 else:
-                     event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
-                     response_text = f"¡Hola! 👋 Eventos disponibles para anotar invitados:\n\n{event_list_text}\n\nPor favor, responde con el *número* del evento que deseas seleccionar."
-                     # Guardar los eventos disponibles temporalmente podría ser útil si son muchos
-                     user_states[sender_phone_normalized] = {
-                         'state': STATE_AWAITING_EVENT_SELECTION,
-                         'event': None,
-                         'available_events': available_events # Guardamos la lista que mostramos
-                     }
-            # --- Añadido: Manejar consulta de lista aquí también ---
-            elif parsed_command['command_type'] == 'count':
-                 count_result, guests_list = count_guests(guest_sheet, sender_phone_normalized) # Contar todos los suyos
-                 # Usar la función existente para formatear la respuesta del conteo
-                 sentiment = analyze_sentiment(incoming_msg).get('sentiment', 'neutral') # Opcional: analizar sentimiento
-                 response_text = generate_count_response(count_result, guests_list, sender_phone_normalized, sentiment)
-                 # Mantenemos el estado inicial
-                 user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None}
-            else:
-                 response_text = '¡Hola! 👋 Para comenzar a anotar invitados, por favor, salúdame o dime "Hola". También puedes pedirme tu "lista de invitados".'
-                 user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None} # Reset state
-
-
-        elif current_state == STATE_AWAITING_EVENT_SELECTION:
-            # PASO 3: Esperando que el usuario elija un evento (por número)
-            available_events = user_status.get('available_events', [])
-            try:
-                choice = int(incoming_msg)
-                if 1 <= choice <= len(available_events):
-                    selected_event = available_events[choice - 1]
-                    logger.info(f"Usuario {sender_phone_normalized} seleccionó evento: {selected_event}")
-
-                    # PASO 4: Enviar instrucciones de formato
-                    response_text = (
-                        f"Perfecto, evento seleccionado: *{selected_event}*.\n\n"
-                        "Para anotar tus invitados, envíame los datos en el siguiente formato EXACTO:\n\n"
-                        "*Hombres:*\n"
-                        "Nombre Apellido\n"
-                        "Nombre Apellido\n"
-                        "...\n"
-                        "Email@ejemplo.com\n"
-                        "Email@ejemplo.com\n"
-                        "...\n\n"
-                        "*Mujeres:*\n"
-                        "Nombre Apellido\n"
-                        "Nombre Apellido\n"
-                        "...\n"
-                        "Email@ejemplo.com\n"
-                        "Email@ejemplo.com\n"
-                        "...\n\n"
-                        "⚠️ *Importante*: Debe haber la misma cantidad de nombres y emails en cada sección (Hombres/Mujeres)."
-                    )
-                    user_states[sender_phone_normalized] = {
-                        'state': STATE_AWAITING_GUEST_DATA,
-                        'event': selected_event
-                    }
+        guest_sheet = sheet_conn.guest_sheet # Acceder al atributo ya inicializado en _connect
+        if guest_sheet is None:
+                logger.error(f"Hoja 'Invitados' no disponible para {sender_phone_normalized}.")
+                response_text = "Error interno: No se puede acceder a la lista de invitados. Contacta al administrador."
+                # Continuar para enviar el mensaje de error
+        else:
+            if current_state == STATE_INITIAL:
+                # Esperando un saludo para iniciar
+                # Usar el parseador para detectar saludo de forma robusta
+                parsed_command = parse_message_enhanced(incoming_msg)
+                if parsed_command['command_type'] == 'saludo':
+                    # PASO 2: Responder con eventos disponibles
+                    available_events = sheet_conn.get_available_events()
+                    if not available_events:
+                        response_text = "¡Hola! 👋 No encontré eventos disponibles para anotar invitados en este momento."
+                        user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None} # Reset state
+                    else:
+                        event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
+                        response_text = f"¡Hola! 👋 Eventos disponibles para anotar invitados:\n\n{event_list_text}\n\nPor favor, responde con el *número* del evento que deseas seleccionar."
+                        # Guardar los eventos disponibles temporalmente podría ser útil si son muchos
+                        user_states[sender_phone_normalized] = {
+                            'state': STATE_AWAITING_EVENT_SELECTION,
+                            'event': None,
+                            'available_events': available_events # Guardamos la lista que mostramos
+                        }
+                # --- Añadido: Manejar consulta de lista aquí también ---
+                elif parsed_command['command_type'] == 'count':
+                    count_result, guests_list = count_guests(guest_sheet, sender_phone_normalized) # Contar todos los suyos
+                    # Usar la función existente para formatear la respuesta del conteo
+                    sentiment = analyze_sentiment(incoming_msg).get('sentiment', 'neutral') # Opcional: analizar sentimiento
+                    response_text = generate_count_response(count_result, guests_list, sender_phone_normalized, sentiment)
+                    # Mantenemos el estado inicial
+                    user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None}
                 else:
-                    # Número inválido
-                     event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
-                     response_text = f"El número '{incoming_msg}' no es válido. Por favor, elige un número de la lista:\n\n{event_list_text}"
+                    response_text = '¡Hola! 👋 Para comenzar a anotar invitados, por favor, salúdame o dime "Hola". También puedes pedirme tu "lista de invitados".'
+                    user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None} # Reset state
+
+
+            elif current_state == STATE_AWAITING_EVENT_SELECTION:
+                # PASO 3: Esperando que el usuario elija un evento (por número)
+                available_events = user_status.get('available_events', [])
+                try:
+                    choice = int(incoming_msg)
+                    if 1 <= choice <= len(available_events):
+                        selected_event = available_events[choice - 1]
+                        logger.info(f"Usuario {sender_phone_normalized} seleccionó evento: {selected_event}")
+
+                        # PASO 4: Enviar instrucciones de formato
+                        response_text = (
+                            f"Perfecto, evento seleccionado: *{selected_event}*.\n\n"
+                            "Para anotar tus invitados, envíame los datos en el siguiente formato EXACTO:\n\n"
+                            "*Hombres:*\n"
+                            "Nombre Apellido\n"
+                            "Nombre Apellido\n"
+                            "...\n"
+                            "Email@ejemplo.com\n"
+                            "Email@ejemplo.com\n"
+                            "...\n\n"
+                            "*Mujeres:*\n"
+                            "Nombre Apellido\n"
+                            "Nombre Apellido\n"
+                            "...\n"
+                            "Email@ejemplo.com\n"
+                            "Email@ejemplo.com\n"
+                            "...\n\n"
+                            "⚠️ *Importante*: Debe haber la misma cantidad de nombres y emails en cada sección (Hombres/Mujeres)."
+                        )
+                        user_states[sender_phone_normalized] = {
+                            'state': STATE_AWAITING_GUEST_DATA,
+                            'event': selected_event
+                        }
+                    else:
+                        # Número inválido
+                        event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
+                        response_text = f"El número '{incoming_msg}' no es válido. Por favor, elige un número de la lista:\n\n{event_list_text}"
+                        # Mantenemos el estado AWAITING_EVENT_SELECTION
+                except ValueError:
+                    # No envió un número
+                    event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
+                    response_text = f"Por favor, responde sólo con el *número* del evento que deseas seleccionar de la lista:\n\n{event_list_text}"
                     # Mantenemos el estado AWAITING_EVENT_SELECTION
-            except ValueError:
-                # No envió un número
-                event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
-                response_text = f"Por favor, responde sólo con el *número* del evento que deseas seleccionar de la lista:\n\n{event_list_text}"
-                 # Mantenemos el estado AWAITING_EVENT_SELECTION
 
 
-        elif current_state == STATE_AWAITING_GUEST_DATA:
-             # PASO 5: Esperando la lista de invitados en el formato especificado
-             logger.info(f"Procesando datos de invitados para {sender_phone_normalized} en evento {selected_event}")
-             # Usar el parseador avanzado para detectar el tipo de comando (add_guests o add_guests_split)
-             parsed = parse_message_enhanced(incoming_msg)
-             command_type = parsed['command_type']
-             data_lines = parsed['data'] # Lista de líneas no vacías
-             categories = parsed['categories'] # Diccionario con categorías detectadas (Hombres, Mujeres)
+            elif current_state == STATE_AWAITING_GUEST_DATA:
+                # PASO 5: Esperando la lista de invitados en el formato especificado
+                logger.info(f"Procesando datos de invitados para {sender_phone_normalized} en evento {selected_event}")
+                # Usar el parseador avanzado para detectar el tipo de comando (add_guests o add_guests_split)
+                parsed = parse_message_enhanced(incoming_msg)
+                command_type = parsed['command_type']
+                data_lines = parsed['data'] # Lista de líneas no vacías
+                categories = parsed['categories'] # Diccionario con categorías detectadas (Hombres, Mujeres)
 
-             if command_type in ['add_guests', 'add_guests_split'] and data_lines: # Asegúrate que haya datos
-                added_count = add_guests_to_sheet(
-                    guest_sheet,
-                    data_lines, # <- Pasar la variable
-                    sender_phone_normalized,
-                    selected_event,
-                    categories, # <- Pasar la variable
-                    command_type # <- Pasar la variable
-            )
+                if command_type in ['add_guests', 'add_guests_split'] and data_lines: # Asegúrate que haya datos
+                    added_count = add_guests_to_sheet(
+                        guest_sheet,
+                        data_lines, # <- Pasar la variable
+                        sender_phone_normalized,
+                        selected_event,
+                        categories, # <- Pasar la variable
+                        command_type # <- Pasar la variable
+                )
 
-                 # PASO 5.2: Responder confirmación o error
-                if added_count > 0:
-                     response_text = f"✅ ¡Listo! Se anotaron *{added_count}* invitados correctamente para el evento *{selected_event}*."
-                     # Volver al estado inicial después de éxito
-                     user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None}
-                elif added_count == 0:
-                     # Podría ser que el formato era inválido y no se extrajo nada, o un error de sheet.
-                     response_text = f"⚠️ No pude anotar invitados. Revisa el formato:\n\n*Hombres:*\nNombre\n...\nEmail\n...\n\n*Mujeres:*\nNombre\n...\nEmail\n...\n\nAsegúrate que la cantidad de nombres y emails coincida en cada sección."
-                     # Mantenemos estado para que reintente
-                     user_states[sender_phone_normalized] = {'state': STATE_AWAITING_GUEST_DATA, 'event': selected_event}
-                elif added_count == -1:
-                     # Error específico de validación (ej. email faltante)
-                     response_text = f"⚠️ Detecté un problema. Parece que faltan emails o algunos no son válidos. Revisa la lista y asegúrate que cada nombre tenga un email asociado y válido.\n\nIntenta enviarla de nuevo con el formato correcto."
-                     # Mantenemos estado para que reintente
-                     user_states[sender_phone_normalized] = {'state': STATE_AWAITING_GUEST_DATA, 'event': selected_event}
-                else: # Otro error < -1 (no definido actualmente) o error genérico (si add_guests retorna < -1)
-                     response_text = "❌ Hubo un error al guardar los invitados. Por favor, inténtalo de nuevo más tarde."
-                     # Volver al estado inicial en error desconocido grave
-                     user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None}
+                    # PASO 5.2: Responder confirmación o error
+                    if added_count > 0:
+                        response_text = f"✅ ¡Listo! Se anotaron *{added_count}* invitados correctamente para el evento *{selected_event}*."
+                        # Volver al estado inicial después de éxito
+                        user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None}
+                    elif added_count == 0:
+                        # Podría ser que el formato era inválido y no se extrajo nada, o un error de sheet.
+                        response_text = f"⚠️ No pude anotar invitados. Revisa el formato:\n\n*Hombres:*\nNombre\n...\nEmail\n...\n\n*Mujeres:*\nNombre\n...\nEmail\n...\n\nAsegúrate que la cantidad de nombres y emails coincida en cada sección."
+                        # Mantenemos estado para que reintente
+                        user_states[sender_phone_normalized] = {'state': STATE_AWAITING_GUEST_DATA, 'event': selected_event}
+                    elif added_count == -1:
+                        # Error específico de validación (ej. email faltante)
+                        response_text = f"⚠️ Detecté un problema. Parece que faltan emails o algunos no son válidos. Revisa la lista y asegúrate que cada nombre tenga un email asociado y válido.\n\nIntenta enviarla de nuevo con el formato correcto."
+                        # Mantenemos estado para que reintente
+                        user_states[sender_phone_normalized] = {'state': STATE_AWAITING_GUEST_DATA, 'event': selected_event}
+                    else: # Otro error < -1 (no definido actualmente) o error genérico (si add_guests retorna < -1)
+                        response_text = "❌ Hubo un error al guardar los invitados. Por favor, inténtalo de nuevo más tarde."
+                        # Volver al estado inicial en error desconocido grave
+                        user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None}
 
-             elif incoming_msg.lower() in ["cancelar", "salir", "cancel", "exit"]:
-                 response_text = "Operación cancelada. Si quieres anotar invitados para otro evento, sólo salúdame de nuevo."
-                 user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None} # Reset state
-             else:
-                 # Mensaje inesperado mientras se esperaban datos
-                 response_text = (f"Estoy esperando la lista de invitados para *{selected_event}*.\n"
-                                 "Por favor, usa el formato que te indiqué:\n\n"
-                                 "*Hombres:*\nNombre\n...\nEmail\n...\n\n*Mujeres:*\nNombre\n...\nEmail\n...\n\n"
-                                 "O escribe 'cancelar' para volver a empezar.")
-                 # Mantenemos el estado AWAITING_GUEST_DATA
+                elif incoming_msg.lower() in ["cancelar", "salir", "cancel", "exit"]:
+                    response_text = "Operación cancelada. Si quieres anotar invitados para otro evento, sólo salúdame de nuevo."
+                    user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None} # Reset state
+                else:
+                    # Mensaje inesperado mientras se esperaban datos
+                    response_text = (f"Estoy esperando la lista de invitados para *{selected_event}*.\n"
+                                    "Por favor, usa el formato que te indiqué:\n\n"
+                                    "*Hombres:*\nNombre\n...\nEmail\n...\n\n*Mujeres:*\nNombre\n...\nEmail\n...\n\n"
+                                    "O escribe 'cancelar' para volver a empezar.")
+                    # Mantenemos el estado AWAITING_GUEST_DATA
 
-        # --- Fin Lógica basada en Estados ---
+            # --- Fin Lógica basada en Estados ---
 
-        # Enviar la respuesta calculada
-        if not send_twilio_message(sender_phone_raw, response_text): # Usar el número raw original para enviar
-            logger.error(f"Fallo al enviar mensaje de respuesta a {sender_phone_raw}")
-            # No podemos informar al usuario si falla el envío
-            return jsonify({"status": "error", "message": "Failed to send response"}), 500
+            # Enviar la respuesta calculada
+            if not send_twilio_message(sender_phone_raw, response_text): # Usar el número raw original para enviar
+                logger.error(f"Fallo al enviar mensaje de respuesta a {sender_phone_raw}")
+                # No podemos informar al usuario si falla el envío
+                return jsonify({"status": "error", "message": "Failed to send response"}), 500
 
-        logger.info(f"Respuesta enviada a {sender_phone_raw}: {response_text[:100]}...") # Loguea inicio de respuesta
-        return jsonify({"status": "success"}), 200
+            logger.info(f"Respuesta enviada a {sender_phone_raw}: {response_text[:100]}...") # Loguea inicio de respuesta
+            return jsonify({"status": "success"}), 200
 
     
     except Exception as e:
