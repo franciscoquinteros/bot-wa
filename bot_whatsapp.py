@@ -1181,62 +1181,81 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
         logger.error(traceback.format_exc())
         return 0 # Indicar fallo genérico
     
-def count_guests(sheet, phone_number=None, event_name=None):
+# MODIFICADO: Añadir sheet_conn, buscar PR name y filtrar por él.
+def count_guests(sheet, sheet_conn, phone_number=None, event_name=None):
     """
-    Cuenta invitados y recupera sus detalles, opcionalmente filtrados por publicador y/o evento.
+    Cuenta invitados y recupera sus detalles, opcionalmente filtrados por
+    el NOMBRE DEL PUBLICADOR (buscado a partir de su phone_number) y/o evento.
 
     Args:
-        sheet: Objeto de hoja de Google Sheets
-        phone_number (str, optional): Número de teléfono del publicador para filtrar.
+        sheet: Objeto de hoja de Google Sheets ('Invitados')
+        sheet_conn: Instancia de SheetsConnection para buscar el nombre PR. <-- NUEVO
+        phone_number (str, optional): Número de teléfono NORMALIZADO del publicador para filtrar.
         event_name (str, optional): Nombre del evento para filtrar.
 
     Returns:
         tuple: (dict con conteos por género, lista con detalles de invitados filtrados)
     """
     try:
-        all_data = sheet.get_all_records() # Asume que la primera fila son headers
+        # Obtener todos los registros de la hoja 'Invitados'
+        all_data = sheet.get_all_records() # Asume headers en la primera fila
 
         if not all_data:
-            logger.warning("La hoja no contiene datos (después de los encabezados)")
+            logger.warning("La hoja 'Invitados' no contiene datos (después de encabezados)")
             return {'Total': 0}, []
 
         filtered_data = all_data
-        logger.info(f"Datos leídos: {len(all_data)} filas.")
+        logger.info(f"Leídos {len(all_data)} registros de 'Invitados'.")
 
-        # Filtrar por número de teléfono (Publica)
+        # --- Filtrar por Publicador (usando Nombre PR) ---
+        pr_name_to_filter = None # Nombre del PR que usaremos para filtrar
         if phone_number:
-            # Normalizar el número de teléfono (eliminar 'whatsapp:' y '+', espacios)
-            normalized_phone = phone_number.replace('whatsapp:', '').replace('+', '').replace(' ', '')
-            logger.info(f"Filtrando por teléfono normalizado: {normalized_phone}")
-            # Asume que la columna se llama 'Publica'
-            filtered_data = [row for row in filtered_data if str(row.get('Publica', '')).replace('+', '').replace(' ', '') == normalized_phone]
-            logger.info(f"Después de filtrar por teléfono: {len(filtered_data)} filas.")
+            # Buscar el nombre del PR correspondiente al número de teléfono del solicitante
+            try:
+                phone_to_pr_map = sheet_conn.get_phone_pr_mapping()
+                pr_name_to_filter = phone_to_pr_map.get(phone_number) # phone_number ya está normalizado
 
+                if not pr_name_to_filter:
+                    logger.warning(f"No se encontró Nombre PR para el número {phone_number} en 'Telefonos'. El conteo para este publicador será 0.")
+                    # Si no encontramos el nombre, no debería haber invitados para él (ya que add_guests usa el nombre)
+                    filtered_data = [] # Devolvemos 0 resultados para este usuario
+                else:
+                    logger.info(f"Filtrando conteo por Nombre PR: '{pr_name_to_filter}'")
+                    # **CORRECCIÓN:** Filtrar comparando la columna 'Publica' con el NOMBRE del PR
+                    filtered_data = [row for row in filtered_data if row.get('Publica', '') == pr_name_to_filter]
+                    logger.info(f"Después de filtrar por Nombre PR '{pr_name_to_filter}': {len(filtered_data)} filas.")
 
-        # Filtrar por nombre de evento
-        if event_name:
+            except Exception as map_err:
+                 logger.error(f"Error al obtener mapeo PR para filtrar conteo ({phone_number}): {map_err}. Conteo filtrado será 0.")
+                 filtered_data = [] # Error al buscar = 0 resultados para este usuario
+        # Si no se proporcionó phone_number, no se filtra por publicador.
+
+        # --- Filtrar por Evento (sin cambios) ---
+        if event_name and filtered_data: # Solo filtrar si aún hay datos y se especificó evento
             logger.info(f"Filtrando por evento: {event_name}")
-            # Asume que la columna se llama 'Evento'
             filtered_data = [row for row in filtered_data if row.get('Evento', '') == event_name]
             logger.info(f"Después de filtrar por evento: {len(filtered_data)} filas.")
 
-
-        # Contar por género
+        # --- Contar por Género (sin cambios) ---
         categories = {}
-        for row in filtered_data:
-            # Asume que la columna se llama 'Genero'
+        for row in filtered_data: # Contar sobre los datos ya filtrados
             gender = row.get('Genero', 'Sin categoría')
-            if not gender: # Si está vacío, tratar como sin categoría
-                 gender = 'Sin categoría'
+            if not gender:
+                gender = 'Sin categoría'
             categories[gender] = categories.get(gender, 0) + 1
 
-        # Agregar total
-        categories['Total'] = len(filtered_data)
+        categories['Total'] = len(filtered_data) # Total basado en datos filtrados
 
-        logger.info(f"Conteo completo para {phone_number} / {event_name}: {categories}")
+        # Usar pr_name_to_filter o phone_number para el log, según qué se usó
+        filter_id = pr_name_to_filter if pr_name_to_filter else (phone_number if phone_number else "Todos")
+        logger.info(f"Conteo completo para '{filter_id}' / {event_name or 'Todos'}: {categories}")
         return categories, filtered_data
+
+    except gspread.exceptions.APIError as api_err:
+        logger.error(f"Error de API al leer/contar invitados: {api_err}")
+        return {'Total': 0}, []
     except Exception as e:
-        logger.error(f"Error al contar invitados: {e}")
+        logger.error(f"Error inesperado al contar invitados: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return {'Total': 0}, []
@@ -1461,12 +1480,15 @@ def whatsapp_reply():
                         }
                 # --- Añadido: Manejar consulta de lista aquí también ---
                 elif parsed_command['command_type'] == 'count':
-                    count_result, guests_list = count_guests(guest_sheet, sender_phone_normalized) # Contar todos los suyos
+                    # MODIFICADO: Pasar sheet_conn a count_guests
+                    count_result, guests_list = count_guests(guest_sheet, sheet_conn, sender_phone_normalized) # Contar todos los suyos
                     # Usar la función existente para formatear la respuesta del conteo
                     sentiment = analyze_sentiment(incoming_msg).get('sentiment', 'neutral') # Opcional: analizar sentimiento
+                    # Generar respuesta (generate_count_response no necesita sheet_conn)
                     response_text = generate_count_response(count_result, guests_list, sender_phone_normalized, sentiment)
                     # Mantenemos el estado inicial
                     user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None}
+
                 else:
                     response_text = '¡Hola! 👋 Para comenzar a anotar invitados, por favor, salúdame o dime "Hola". También puedes pedirme tu "lista de invitados".'
                     user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None} # Reset state
