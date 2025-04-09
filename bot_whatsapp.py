@@ -1182,83 +1182,130 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
         return 0 # Indicar fallo genérico
     
 # MODIFICADO: Añadir sheet_conn, buscar PR name y filtrar por él.
-def count_guests(sheet, sheet_conn, phone_number=None, event_name=None):
+def get_guests_by_pr(sheet, sheet_conn, phone_number):
     """
-    Cuenta invitados y recupera sus detalles, opcionalmente filtrados por
-    el NOMBRE DEL PUBLICADOR (buscado a partir de su phone_number) y/o evento.
+    Obtiene todos los registros de invitados asociados a un número de teléfono de publicador.
 
     Args:
-        sheet: Objeto de hoja de Google Sheets ('Invitados')
-        sheet_conn: Instancia de SheetsConnection para buscar el nombre PR. <-- NUEVO
-        phone_number (str, optional): Número de teléfono NORMALIZADO del publicador para filtrar.
-        event_name (str, optional): Nombre del evento para filtrar.
+        sheet: Objeto de hoja de Google Sheets ('Invitados').
+        sheet_conn: Instancia de SheetsConnection para buscar el nombre PR.
+        phone_number (str): Número de teléfono NORMALIZADO del publicador.
 
     Returns:
-        tuple: (dict con conteos por género, lista con detalles de invitados filtrados)
+        list: Lista de diccionarios de invitados filtrados, o lista vacía si no se encuentra PR o no hay invitados.
     """
+    pr_name = None
     try:
-        # Obtener todos los registros de la hoja 'Invitados'
-        all_data = sheet.get_all_records() # Asume headers en la primera fila
+        # Obtener el nombre del PR
+        phone_to_pr_map = sheet_conn.get_phone_pr_mapping()
+        pr_name = phone_to_pr_map.get(phone_number)
 
-        if not all_data:
-            logger.warning("La hoja 'Invitados' no contiene datos (después de encabezados)")
-            return {'Total': 0}, []
+        if not pr_name:
+            logger.warning(f"No se encontró PR Name para el número {phone_number} al buscar invitados.")
+            return [] # No hay invitados si no hay PR
 
-        filtered_data = all_data
-        logger.info(f"Leídos {len(all_data)} registros de 'Invitados'.")
+        # Obtener todos los registros
+        all_guests = sheet.get_all_records()
+        if not all_guests:
+            logger.warning("La hoja 'Invitados' está vacía.")
+            return []
 
-        # --- Filtrar por Publicador (usando Nombre PR) ---
-        pr_name_to_filter = None # Nombre del PR que usaremos para filtrar
-        if phone_number:
-            # Buscar el nombre del PR correspondiente al número de teléfono del solicitante
-            try:
-                phone_to_pr_map = sheet_conn.get_phone_pr_mapping()
-                pr_name_to_filter = phone_to_pr_map.get(phone_number) # phone_number ya está normalizado
-
-                if not pr_name_to_filter:
-                    logger.warning(f"No se encontró Nombre PR para el número {phone_number} en 'Telefonos'. El conteo para este publicador será 0.")
-                    # Si no encontramos el nombre, no debería haber invitados para él (ya que add_guests usa el nombre)
-                    filtered_data = [] # Devolvemos 0 resultados para este usuario
-                else:
-                    logger.info(f"Filtrando conteo por Nombre PR: '{pr_name_to_filter}'")
-                    # **CORRECCIÓN:** Filtrar comparando la columna 'Publica' con el NOMBRE del PR
-                    filtered_data = [row for row in filtered_data if row.get('Publica', '') == pr_name_to_filter]
-                    logger.info(f"Después de filtrar por Nombre PR '{pr_name_to_filter}': {len(filtered_data)} filas.")
-
-            except Exception as map_err:
-                 logger.error(f"Error al obtener mapeo PR para filtrar conteo ({phone_number}): {map_err}. Conteo filtrado será 0.")
-                 filtered_data = [] # Error al buscar = 0 resultados para este usuario
-        # Si no se proporcionó phone_number, no se filtra por publicador.
-
-        # --- Filtrar por Evento (sin cambios) ---
-        if event_name and filtered_data: # Solo filtrar si aún hay datos y se especificó evento
-            logger.info(f"Filtrando por evento: {event_name}")
-            filtered_data = [row for row in filtered_data if row.get('Evento', '') == event_name]
-            logger.info(f"Después de filtrar por evento: {len(filtered_data)} filas.")
-
-        # --- Contar por Género (sin cambios) ---
-        categories = {}
-        for row in filtered_data: # Contar sobre los datos ya filtrados
-            gender = row.get('Genero', 'Sin categoría')
-            if not gender:
-                gender = 'Sin categoría'
-            categories[gender] = categories.get(gender, 0) + 1
-
-        categories['Total'] = len(filtered_data) # Total basado en datos filtrados
-
-        # Usar pr_name_to_filter o phone_number para el log, según qué se usó
-        filter_id = pr_name_to_filter if pr_name_to_filter else (phone_number if phone_number else "Todos")
-        logger.info(f"Conteo completo para '{filter_id}' / {event_name or 'Todos'}: {categories}")
-        return categories, filtered_data
+        # Filtrar por nombre del PR
+        user_guests = [guest for guest in all_guests if guest.get('Publica') == pr_name]
+        logger.info(f"Encontrados {len(user_guests)} invitados para PR '{pr_name}' ({phone_number}).")
+        return user_guests
 
     except gspread.exceptions.APIError as api_err:
-        logger.error(f"Error de API al leer/contar invitados: {api_err}")
-        return {'Total': 0}, []
+        logger.error(f"Error de API al leer invitados para PR '{pr_name}': {api_err}")
+        return []
     except Exception as e:
-        logger.error(f"Error inesperado al contar invitados: {e}")
+        logger.error(f"Error inesperado al obtener invitados para PR '{pr_name}': {e}")
         import traceback
         logger.error(traceback.format_exc())
-        return {'Total': 0}, []
+        return []
+
+def generate_per_event_response(guests_by_event, pr_name, phone_number):
+    """
+    Genera una respuesta detallada agrupada por evento.
+
+    Args:
+        guests_by_event (dict): Diccionario {event_name: [lista_invitados_evento]}.
+        pr_name (str): Nombre del PR.
+        phone_number (str): Número de teléfono normalizado del PR.
+
+    Returns:
+        str: Respuesta formateada.
+    """
+    if not guests_by_event:
+        return f"No tienes invitados registrados aún ({pr_name} / {phone_number}).\n\n(Selecciona un evento y envía la lista para agregar)."
+
+    response_parts = [f"Resumen de tus invitados ({pr_name} / {phone_number}):"]
+    grand_total = 0
+
+    # Iterar sobre cada evento encontrado
+    for event_name, event_guest_list in guests_by_event.items():
+        if not event_guest_list: continue # Saltar si la lista está vacía por alguna razón
+
+        response_parts.append(f"\n\n--- Evento: *{event_name}* ---")
+
+        # Calcular conteos por género para ESTE evento
+        event_categories = {}
+        for guest in event_guest_list:
+            gender_keys = ['Genero', 'genero', 'Género', 'Gender']
+            gender = next((guest[k] for k in gender_keys if k in guest and guest[k]), 'Sin categoría')
+            if not gender: gender = 'Sin categoría'
+            event_categories[gender] = event_categories.get(gender, 0) + 1
+
+        # Añadir conteos por género para el evento
+        has_gender_counts = False
+        for category, count in event_categories.items():
+             if count > 0:
+                display_category = category
+                if category.lower() == "masculino": display_category = "Hombres"
+                elif category.lower() == "femenino": display_category = "Mujeres"
+                response_parts.append(f"📊 {display_category}: {count}")
+                has_gender_counts = True
+        if not has_gender_counts:
+             response_parts.append("(No se especificó género)")
+
+
+        # Añadir total para el evento
+        total_event = len(event_guest_list)
+        grand_total += total_event
+        response_parts.append(f"Total Evento: {total_event} invitado{'s' if total_event != 1 else ''}")
+
+        # Añadir detalle de invitados para el evento
+        response_parts.append("\n📝 Detalle:")
+        guests_by_gender_in_event = {}
+        for guest in event_guest_list:
+            gender_keys = ['Genero', 'genero', 'Género', 'Gender']
+            gender = next((guest[k] for k in gender_keys if k in guest and guest[k]), 'Sin categoría')
+            if not gender: gender = 'Sin categoría'
+            if gender not in guests_by_gender_in_event:
+                guests_by_gender_in_event[gender] = []
+            guests_by_gender_in_event[gender].append(guest)
+
+        for gender, guests in guests_by_gender_in_event.items():
+            display_gender = gender
+            if gender.lower() == "masculino": display_gender = "Hombres"
+            elif gender.lower() == "femenino": display_gender = "Mujeres"
+            response_parts.append(f"*{display_gender}*:")
+            for guest in guests:
+                name_keys = ['Nombre y Apellido', 'Nombre', 'nombre']
+                email_keys = ['Email', 'email']
+                full_name = next((guest[k] for k in name_keys if k in guest and guest[k]), '').strip()
+                if not full_name:
+                     nombre = guest.get('nombre', '')
+                     apellido = guest.get('apellido', '')
+                     full_name = f"{nombre} {apellido}".strip() or "?(sin nombre)"
+                email = next((guest[k] for k in email_keys if k in guest and guest[k]), '?(sin email)')
+                response_parts.append(f"  • {full_name} - {email}")
+
+    # Añadir un total general al final (opcional pero útil)
+    response_parts.append(f"\n\n---\nTotal General: {grand_total} invitado{'s' if grand_total != 1 else ''} en {len(guests_by_event)} evento{'s' if len(guests_by_event) != 1 else ''}.")
+
+    return "\n".join(response_parts)
+
 
 # MODIFICADO: Añadir event_name y usarlo en la respuesta
 def generate_count_response(result, guests_data, phone_number, sentiment, event_name=None):
@@ -1496,38 +1543,46 @@ def whatsapp_reply():
                         }
                 # --- Añadido: Manejar consulta de lista aquí también ---
                 elif parsed_command['command_type'] == 'count':
-                    event_to_count = None # Por defecto, contar todos los eventos
-                    # Verificar si hay un evento activo en el estado del usuario
-                    if current_state == STATE_AWAITING_GUEST_DATA and selected_event:
-                        event_to_count = selected_event
-                        logger.info(f"Contando invitados para el evento activo: {event_to_count}")
-                    elif current_state == STATE_AWAITING_EVENT_SELECTION:
-                        # Si está esperando seleccionar evento, aún no hay uno activo para contar
-                        logger.info("Usuario pidió contar, pero aún no ha seleccionado evento.")
-                        # event_to_count sigue siendo None (contará todos)
-                    else: # Estado inicial
-                        logger.info("Usuario pidió contar desde el estado inicial (contará todos).")
-                        # event_to_count sigue siendo None
+                    logger.info(f"Procesando comando 'count' para {sender_phone_normalized}")
 
-                    # Llamar a count_guests pasando el evento (o None si no hay evento activo)
-                    count_result, guests_list = count_guests(
-                        guest_sheet,
-                        sheet_conn,
-                        sender_phone_normalized,
-                        event_name=event_to_count # <-- PASAR EL EVENTO AQUÍ
+                    # 1. Obtener TODOS los invitados del PR
+                    all_user_guests = get_guests_by_pr(guest_sheet, sheet_conn, sender_phone_normalized)
+
+                    # 2. Agrupar por evento
+                    guests_by_event = {}
+                    if all_user_guests:
+                        for guest in all_user_guests:
+                            # Usar 'Sin Evento Asignado' si la columna está vacía o no existe
+                            event_name = guest.get('Evento', 'Sin Evento Asignado')
+                            if not event_name: event_name = 'Sin Evento Asignado' # Asegurar que no sea ''
+
+                            if event_name not in guests_by_event:
+                                guests_by_event[event_name] = []
+                            guests_by_event[event_name].append(guest)
+                        logger.info(f"Invitados agrupados en {len(guests_by_event)} eventos.")
+                    else:
+                        logger.info("No se encontraron invitados para agrupar.")
+
+                    # 3. Obtener el nombre del PR (para mostrar en la respuesta)
+                    pr_name = sender_phone_normalized # Fallback
+                    try:
+                        phone_to_pr_map = sheet_conn.get_phone_pr_mapping()
+                        pr_name_found = phone_to_pr_map.get(sender_phone_normalized)
+                        if pr_name_found:
+                            pr_name = pr_name_found
+                    except Exception as e:
+                        logger.error(f"Error buscando nombre PR para respuesta de conteo: {e}")
+
+
+                    # 4. Generar la respuesta agrupada por evento
+                    response_text = generate_per_event_response(
+                        guests_by_event,
+                        pr_name, # Pasar el nombre encontrado o el número
+                        sender_phone_normalized # Pasar el número original normalizado también
                     )
 
-                    # Usar la función existente para formatear la respuesta del conteo
-                    sentiment = analyze_sentiment(incoming_msg).get('sentiment', 'neutral')
-
-                    # MODIFICADO: Pasar event_to_count a generate_count_response
-                    response_text = generate_count_response(
-                        count_result,
-                        guests_list,
-                        sender_phone_normalized,
-                        sentiment,
-                        event_name=event_to_count # <-- PASAR EL EVENTO AQUÍ
-                    )
+                    # No cambiamos el estado del usuario al contar
+                    logger.info("Respuesta de conteo por evento generada.")
 
                 else:
                     response_text = '¡Hola! 👋 Para comenzar a anotar invitados, por favor, salúdame o dime "Hola". También puedes pedirme tu "lista de invitados".'
