@@ -1260,90 +1260,106 @@ def count_guests(sheet, sheet_conn, phone_number=None, event_name=None):
         logger.error(traceback.format_exc())
         return {'Total': 0}, []
 
-def generate_count_response(result, guests_data, phone_number, sentiment):
+# MODIFICADO: Añadir event_name y usarlo en la respuesta
+def generate_count_response(result, guests_data, phone_number, sentiment, event_name=None):
     """
-    Genera una respuesta personalizada para la consulta de invitados con información detallada
-    
+    Genera una respuesta personalizada para la consulta de invitados con información detallada,
+    opcionalmente específica para un evento.
+
     Args:
-        result (dict): Resultados del conteo de invitados
-        guests_data (list): Lista de diccionarios con detalles de invitados
-        phone_number (str): Número de teléfono del usuario
+        result (dict): Resultados del conteo de invitados ({'Genero': count, 'Total': total})
+        guests_data (list): Lista de diccionarios con detalles de invitados filtrados
+        phone_number (str): Número de teléfono normalizado del usuario
         sentiment (str): Sentimiento detectado en el mensaje
-        
+        event_name (str, optional): Nombre del evento si el conteo fue filtrado. <-- NUEVO
+
     Returns:
         str: Respuesta personalizada
     """
-    if not result or result.get('Total', 0) == 0:
-        base_response = "No tienes invitados registrados aún con tu número de teléfono."
-        
-        # Añadir instrucciones si no hay invitados
-        base_response += "\n\nPuedes añadir invitados usando este formato:\n\nHombres:\nJuan Pérez - juan@ejemplo.com\n\nMujeres:\nMaría López - maria@ejemplo.com"
+    # Construir el encabezado dinámicamente
+    if event_name:
+        header_intro = f"Para el evento *{event_name}*, tus invitados registrados"
     else:
-        base_response = f"📋 Tus invitados registrados ({phone_number}):\n\n"
-        
-        # Mostrar conteo por género
-        for category, count in result.items():
-            if category != 'Total':
-                # Formatear categoría para mejor visualización
-                display_category = category
-                if category.lower() == "masculino":
-                    display_category = "Hombres"
-                elif category.lower() == "femenino":
-                    display_category = "Mujeres"
-                
-                base_response += f"- {display_category}: {count}\n"
-        
-        base_response += f"\nTotal: {result.get('Total', 0)} invitados\n\n"
-        
-        # Añadir información detallada de cada invitado agrupada por género
-        base_response += "📝 Detalle de invitados:\n\n"
-        
-        # Agrupar invitados por género
+        header_intro = "Tus invitados registrados TOTALES"
+
+    # Mensaje si no hay invitados
+    if not result or result.get('Total', 0) == 0:
+        if event_name:
+            base_response = f"{header_intro} ({phone_number}):\n\n-- Ninguno --"
+        else:
+             base_response = f"{header_intro} ({phone_number}):\n\n-- Ninguno --"
+        # Añadir instrucciones si no hay invitados
+        base_response += "\n\n(Puedes añadir invitados seleccionando un evento y enviando la lista)."
+        return base_response # Salir temprano si no hay invitados
+
+    # Construir respuesta si SÍ hay invitados
+    base_response = f"{header_intro} ({phone_number}):\n\n"
+
+    # Mostrar conteo por género (excluyendo 'Total')
+    has_gender_counts = False
+    for category, count in result.items():
+        if category != 'Total' and count > 0:
+            display_category = category
+            if category.lower() == "masculino":
+                display_category = "Hombres"
+            elif category.lower() == "femenino":
+                display_category = "Mujeres"
+            # Añadir emoji o formato
+            base_response += f"📊 {display_category}: {count}\n"
+            has_gender_counts = True
+
+    if not has_gender_counts: # Si solo había 'Total' > 0 pero no géneros específicos
+         base_response += "(No se especificó género para los invitados)\n"
+
+
+    # Mostrar Total
+    base_response += f"\nTotal: {result.get('Total', 0)} invitados\n\n"
+
+    # Añadir detalle si hay datos
+    if guests_data:
+        base_response += "📝 Detalle de invitados:\n"
+        # Agrupar invitados por género (usando los datos ya filtrados)
         guests_by_gender = {}
         for guest in guests_data:
-            gender = None
-            for col in ['Genero', 'genero', 'Género', 'género', 'Gender']:
-                if col in guest:
-                    gender = guest[col]
-                    break
-            
-            if not gender:
-                gender = "Sin categoría"
-                
+            # Intentar obtener el género de forma flexible
+            gender_keys = ['Genero', 'genero', 'Género', 'Gender']
+            gender = next((guest[k] for k in gender_keys if k in guest and guest[k]), 'Sin categoría')
+            if not gender: gender = 'Sin categoría' # Doble chequeo por si era ''
+
             if gender not in guests_by_gender:
                 guests_by_gender[gender] = []
-            
             guests_by_gender[gender].append(guest)
-        
+
         # Mostrar invitados por género
         for gender, guests in guests_by_gender.items():
-            # Formatear género para mejor visualización
             display_gender = gender
-            if gender.lower() == "masculino":
-                display_gender = "Hombres"
-            elif gender.lower() == "femenino":
-                display_gender = "Mujeres"
-                
-            base_response += f"◾️ {display_gender}:\n"
-            
+            if gender.lower() == "masculino": display_gender = "Hombres"
+            elif gender.lower() == "femenino": display_gender = "Mujeres"
+
+            base_response += f"\n*{display_gender}*:\n"
             for guest in guests:
-                # Obtener nombre y apellido
-                nombre = guest.get('Nombre', '')
-                apellido = guest.get('Apellido', '')
-                email = guest.get('Email', '')
-                
-                # Añadir detalles del invitado
-                base_response += f"   • {nombre} {apellido} - {email}\n"
-            
-            base_response += "\n"
-    
-    # Personalizar según sentimiento
+                # Intentar obtener nombre/apellido/email de forma flexible
+                name_keys = ['Nombre y Apellido', 'Nombre', 'nombre']
+                email_keys = ['Email', 'email']
+                full_name = next((guest[k] for k in name_keys if k in guest and guest[k]), '').strip()
+                # Si no encontramos 'Nombre y Apellido', intentar construirlo
+                if not full_name:
+                     nombre = guest.get('nombre', '')
+                     apellido = guest.get('apellido', '')
+                     full_name = f"{nombre} {apellido}".strip()
+
+                email = next((guest[k] for k in email_keys if k in guest and guest[k]), '?(sin email)')
+
+                base_response += f"  • {full_name} - {email}\n"
+
+    # Personalizar según sentimiento (opcional, se puede quitar si no es necesario)
     if sentiment == "positivo":
-        return f"{base_response}\n¡Gracias por tu interés! ¿Necesitas añadir más invitados?"
+        return f"{base_response}\n¡Gracias por tu interés!"
     elif sentiment == "negativo":
-        return f"{base_response}\n¿Hay algo específico en lo que pueda ayudarte con tu lista de invitados?"
+        return f"{base_response}\n¿Hay algo específico en lo que pueda ayudarte?"
     else:
         return base_response
+    return base_response # Devolver la respuesta base sin personalización de sentimiento por ahora
     
 def generate_response(command, result, phone_number=None, sentiment_analysis=None):
     """
@@ -1480,14 +1496,38 @@ def whatsapp_reply():
                         }
                 # --- Añadido: Manejar consulta de lista aquí también ---
                 elif parsed_command['command_type'] == 'count':
-                    # MODIFICADO: Pasar sheet_conn a count_guests
-                    count_result, guests_list = count_guests(guest_sheet, sheet_conn, sender_phone_normalized) # Contar todos los suyos
+                    event_to_count = None # Por defecto, contar todos los eventos
+                    # Verificar si hay un evento activo en el estado del usuario
+                    if current_state == STATE_AWAITING_GUEST_DATA and selected_event:
+                        event_to_count = selected_event
+                        logger.info(f"Contando invitados para el evento activo: {event_to_count}")
+                    elif current_state == STATE_AWAITING_EVENT_SELECTION:
+                        # Si está esperando seleccionar evento, aún no hay uno activo para contar
+                        logger.info("Usuario pidió contar, pero aún no ha seleccionado evento.")
+                        # event_to_count sigue siendo None (contará todos)
+                    else: # Estado inicial
+                        logger.info("Usuario pidió contar desde el estado inicial (contará todos).")
+                        # event_to_count sigue siendo None
+
+                    # Llamar a count_guests pasando el evento (o None si no hay evento activo)
+                    count_result, guests_list = count_guests(
+                        guest_sheet,
+                        sheet_conn,
+                        sender_phone_normalized,
+                        event_name=event_to_count # <-- PASAR EL EVENTO AQUÍ
+                    )
+
                     # Usar la función existente para formatear la respuesta del conteo
-                    sentiment = analyze_sentiment(incoming_msg).get('sentiment', 'neutral') # Opcional: analizar sentimiento
-                    # Generar respuesta (generate_count_response no necesita sheet_conn)
-                    response_text = generate_count_response(count_result, guests_list, sender_phone_normalized, sentiment)
-                    # Mantenemos el estado inicial
-                    user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None}
+                    sentiment = analyze_sentiment(incoming_msg).get('sentiment', 'neutral')
+
+                    # MODIFICADO: Pasar event_to_count a generate_count_response
+                    response_text = generate_count_response(
+                        count_result,
+                        guests_list,
+                        sender_phone_normalized,
+                        sentiment,
+                        event_name=event_to_count # <-- PASAR EL EVENTO AQUÍ
+                    )
 
                 else:
                     response_text = '¡Hola! 👋 Para comenzar a anotar invitados, por favor, salúdame o dime "Hola". También puedes pedirme tu "lista de invitados".'
