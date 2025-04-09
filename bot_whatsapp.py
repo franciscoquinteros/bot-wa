@@ -1229,7 +1229,7 @@ def whatsapp_reply():
 
         # Conectar a Google Sheets
         sheet_conn = SheetsConnection()
-        guest_sheet = sheet_conn.get_guest_sheet()
+        guest_sheet = sheet_conn.guest_sheet # <--- Correct: Access attribute directly
 
         # --- Lógica basada en Estados ---
 
@@ -1373,13 +1373,7 @@ def whatsapp_reply():
         logger.info(f"Respuesta enviada a {sender_phone_raw}: {response_text[:100]}...") # Loguea inicio de respuesta
         return jsonify({"status": "success"}), 200
 
-    except SheetsConnection as conn_err:
-        # Error específico de conexión a Sheets
-         logger.error(f"Error CRÍTICO de conexión a Google Sheets: {conn_err}")
-         # Intentar notificar al usuario si es posible
-         if sender_phone_raw:
-             send_twilio_message(sender_phone_raw, "Lo siento, estoy teniendo problemas para acceder a la base de datos de invitados en este momento. Por favor, intenta más tarde.")
-         return jsonify({"status": "error", "message": "Sheet connection error"}), 500
+    
     except Exception as e:
         logger.error(f"Error inesperado en el webhook: {e}")
         import traceback
