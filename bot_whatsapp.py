@@ -447,64 +447,138 @@ def analyze_guests_with_ai(guest_list, category_info=None):
     
 def extract_guests_from_split_format(lines):
     """
-    Procesa un formato alternativo donde los nombres y emails vienen en líneas separadas
-    
+    Procesa el formato BLOQUES: Nombres primero, luego Emails, opcionalmente bajo categorías.
+
+    Ejemplo:
+    Hombres:
+    juan gomez
+    facundo dari
+
+    juangomez@gmail.com
+    facundodari@gmail.com
+
+    Mujeres:
+    ana paula
+    maria diaz
+
+    anapaula@email.com
+    mariadiaz@email.com
+
     Args:
-        lines (list): Lista de líneas con información de invitados
-        
+        lines (list): Lista de líneas crudas del mensaje del usuario.
+
     Returns:
         list: Lista de diccionarios con información estructurada de invitados
+              {'nombre': str, 'apellido': str, 'email': str, 'genero': str}
     """
-    # Separar las líneas en dos grupos: nombres y emails
-    names = []
-    emails = []
-    
+    guests = []
+    names_by_category = {'Hombres': [], 'Mujeres': [], 'General': []}
+    emails_by_category = {'Hombres': [], 'Mujeres': [], 'General': []}
+    category_map = {"Hombres": "Masculino", "Mujeres": "Femenino", "General": "Otro"}
+
+    current_category_key = 'General'
+    parsing_mode = 'names' # Empezamos buscando nombres
+
+    logger.info("Iniciando extracción en formato dividido (Nombres -> Emails)...")
+
     for line in lines:
         line = line.strip()
         if not line:
+            # Las líneas vacías pueden usarse como separadores, no cambian modo ni categoría
             continue
-            
-        # Detectar si la línea es un email
-        if '@' in line and '.' in line.split('@')[1]:
-            emails.append(line)
-        else:
-            names.append(line)
-    
-    # Verificar que haya la misma cantidad de nombres y emails
-    if len(names) != len(emails):
-        logger.warning(f"Desbalance entre nombres ({len(names)}) y emails ({len(emails)})")
-        return []
-    
-    # Crear la lista de invitados estructurada
-    guests = []
-    for i in range(len(names)):
-        name_parts = names[i].strip().split()
-        
-        # Extraer nombre y apellido
-        if len(name_parts) > 1:
-            nombre = name_parts[0]
-            apellido = " ".join(name_parts[1:])
-        else:
-            nombre = name_parts[0]
+
+        # --- Detectar Cambios de Categoría ---
+        if line.lower().startswith('hombres'):
+            current_category_key = 'Hombres'
+            parsing_mode = 'names' # Reiniciar a buscar nombres para la nueva categoría
+            logger.debug(f"Cambiado a categoría: {current_category_key}, modo: {parsing_mode}")
+            continue # Procesada la línea de categoría
+        elif line.lower().startswith('mujeres'):
+            current_category_key = 'Mujeres'
+            parsing_mode = 'names' # Reiniciar a buscar nombres
+            logger.debug(f"Cambiado a categoría: {current_category_key}, modo: {parsing_mode}")
+            continue # Procesada la línea de categoría
+
+        # --- Detectar Emails ---
+        # Usar regex más simple para detectar potencial email
+        if '@' in line and '.' in line.split('@')[-1] and len(line.split('@')[0]) > 0:
+            # Si encontramos un email, cambiamos el modo a 'emails' PARA LA CATEGORÍA ACTUAL
+            if parsing_mode == 'names':
+                 logger.debug(f"Primer email detectado ('{line}') para categoría '{current_category_key}'. Cambiando a modo emails.")
+                 parsing_mode = 'emails'
+
+            # Validar formato un poco más (aunque la validación final está en add_guests...)
+            if re.match(r"[^@\s]+@[^@\s]+\.[^@\s]+", line):
+                 emails_by_category[current_category_key].append(line)
+                 logger.debug(f"Email agregado a '{current_category_key}': {line}")
+            else:
+                 logger.warning(f"Línea '{line}' parece email pero formato inválido en categoría '{current_category_key}'. Ignorando.")
+            continue # Procesada la línea de email
+
+        # --- Si no es Vacía, Categoría ni Email: debe ser un Nombre ---
+        # Solo agregar si estamos en modo 'names'
+        if parsing_mode == 'names':
+             # Asumir que cualquier otra línea no vacía es un nombre
+             # Evitar agregar líneas muy cortas o con caracteres extraños si es necesario
+             if len(line) > 2: # Mínimo 3 caracteres para un nombre? Ajustar si es necesario
+                 names_by_category[current_category_key].append(line)
+                 logger.debug(f"Nombre agregado a '{current_category_key}': {line}")
+             else:
+                 logger.warning(f"Línea '{line}' ignorada (demasiado corta) en categoría '{current_category_key}' mientras se buscaban nombres.")
+        elif parsing_mode == 'emails':
+             # Encontramos una línea que no es email DESPUÉS de empezar a leer emails
+             # Podría ser un error del usuario o el inicio de otra categoría sin header explícito.
+             # Por ahora, lo ignoramos y logueamos. Podría requerir lógica más compleja si el formato varía mucho.
+             logger.warning(f"Línea '{line}' encontrada después de emails en categoría '{current_category_key}'. Ignorando.")
+
+
+    # --- Emparejar Nombres y Emails por Categoría ---
+    logger.info("Emparejando nombres y emails recolectados...")
+    for category_key in ['Hombres', 'Mujeres', 'General']:
+        names = names_by_category[category_key]
+        emails = emails_by_category[category_key]
+        genero = category_map[category_key]
+
+        logger.info(f"Categoría '{category_key}': {len(names)} nombres, {len(emails)} emails.")
+
+        if not names and not emails:
+            continue # Saltar categoría vacía
+
+        if len(names) != len(emails):
+            logger.error(f"¡ERROR DE FORMATO! Desbalance en categoría '{category_key}': {len(names)} nombres vs {len(emails)} emails. Saltando esta categoría.")
+            # Considerar si devolver un error más explícito o intentar emparejar min(len(names), len(emails))
+            continue # Saltar esta categoría
+
+        if len(names) == 0: # Si hay emails pero no nombres (o viceversa, cubierto arriba)
+             logger.error(f"Categoría '{category_key}' tiene emails pero no nombres. Saltando.")
+             continue
+
+        # Emparejar uno a uno
+        for i in range(len(names)):
+            full_name = names[i]
+            email = emails[i]
+            name_parts = full_name.split()
+            nombre = ""
             apellido = ""
-        
-        # Determinar género basado en el nombre
-        genero = "Otro"
-        if nombre.lower().endswith("a") or nombre.lower().endswith("ia"):
-            genero = "Femenino"
-        elif nombre.lower().endswith("o") or nombre.lower().endswith("io"):
-            genero = "Masculino"
-        
-        # Crear el objeto invitado
-        guest = {
-            "nombre": nombre,
-            "apellido": apellido,
-            "email": emails[i],
-            "genero": genero
-        }
-        
-        guests.append(guest)
-    
+
+            if name_parts:
+                nombre = name_parts[0]
+                if len(name_parts) > 1:
+                    apellido = " ".join(name_parts[1:])
+            else:
+                logger.warning(f"Nombre vacío detectado en categoría '{category_key}' para email '{email}'. Saltando entrada.")
+                continue # No se puede agregar sin nombre
+
+            guest_info = {
+                "nombre": nombre,
+                "apellido": apellido,
+                "email": email,
+                "genero": genero
+            }
+            guests.append(guest_info)
+            logger.debug(f"Invitado emparejado: {full_name} - {email} ({genero})")
+
+    logger.info(f"Extracción formato dividido completada. Total invitados estructurados: {len(guests)}")
     return guests
 
 def parse_message(message):
@@ -951,101 +1025,124 @@ def extract_guest_info_from_line(line, category=None):
 def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, categories=None, command_type='add_guests'):
     """
     Agrega invitados a la hoja con información estructurada, incluyendo el evento.
+    ADAPTADO para columnas: Nombre y Apellido | Email | Genero | Publica | Evento | Timestamp
 
     Args:
         sheet: Objeto de hoja de Google Sheets
-        guests_data: Lista de líneas con datos de invitados
-        phone_number: Número de teléfono del anfitrión (Publica)
+        guests_data: Lista de líneas crudas con datos de invitados (para ser procesadas)
+        phone_number: Número de teléfono del anfitrión (Publica) - Normalizado
         event_name: Nombre del evento seleccionado
-        categories (dict, optional): Información sobre categorías detectadas
+        categories (dict, optional): Información sobre categorías detectadas por parse_message_enhanced
         command_type (str): Tipo de comando detectado ('add_guests' o 'add_guests_split')
 
     Returns:
-        int: Número de invitados añadidos (-1 si hay error de validación como email faltante)
+        int: Número de invitados añadidos (-1 si hay error de validación)
     """
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # --- MODIFICADO: Verificar encabezados incluyendo 'Evento' ---
-        expected_headers = ['Nombre', 'Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp']
+        # --- AJUSTADO: Verificar encabezados para 6 columnas ---
+        expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp']
         try:
             headers = sheet.row_values(1)
         except gspread.exceptions.APIError as api_err:
-             # A veces la API falla si la hoja está COMPLETAMENTE vacía
-             if "exceeds grid limits" in str(api_err):
-                 headers = []
+             if "exceeds grid limits" in str(api_err): # Hoja completamente vacía
+                headers = []
              else:
                  raise api_err
 
+        # Actualizar si los encabezados no coinciden o la hoja está vacía
         if not headers or len(headers) < len(expected_headers) or headers[:len(expected_headers)] != expected_headers:
-            # Podrías borrar todo y reescribir o solo la primera fila
-            # Cuidado si ya tienes datos
-            # sheet.clear() # Opcional: Limpiar antes de poner headers si quieres empezar de cero
-            sheet.update('A1:G1', [expected_headers])
-            logger.info(f"Encabezados actualizados/creados en la hoja: {sheet.title}")
+            logger.info(f"Actualizando/Creando encabezados en la hoja '{sheet.title}': {expected_headers}")
+            # Limpiar solo si es estrictamente necesario y estás seguro.
+            # sheet.clear()
+            # Actualizar el rango correcto A1:F1 para 6 columnas
+            sheet.update('A1:F1', [expected_headers])
 
 
-        # Procesar datos de invitados (usando la lógica mejorada que tenías)
+        # --- Procesar datos de invitados ---
         structured_guests = None
-        # Descomenta la parte de AI si la tienes configurada y quieres usarla
-        # if command_type == 'add_guests' and OPENAI_AVAILABLE and client:
-        #     structured_guests = analyze_guests_with_ai(guests_data, categories)
 
-        # Si la IA falla, no está disponible, o es formato dividido, usar procesamiento manual
+        # Usar IA si está disponible y NO es formato split (OpenAI no está entrenado para el formato split)
+        if command_type == 'add_guests' and OPENAI_AVAILABLE and client:
+            logger.info("Intentando análisis de invitados con OpenAI...")
+            structured_guests = analyze_guests_with_ai(guests_data, categories)
+            if structured_guests:
+                 logger.info(f"OpenAI procesó {len(structured_guests)} invitados.")
+            else:
+                 logger.warning("OpenAI no pudo procesar los invitados o devolvió vacío.")
+
+
+        # Si IA falla, no está disponible, o ES formato split, usar procesamiento manual mejorado
         if not structured_guests:
-            # Usar la función mejorada que detecta formato dividido
+            if command_type == 'add_guests_split':
+                 logger.info("Usando extractor manual para formato dividido (Nombres -> Emails)...")
+            else:
+                 logger.info("Usando extractor manual para formato estándar (Nombre - Email)...")
+            # Esta función ahora decide internamente si llamar a extract_guests_from_split_format
             structured_guests = extract_guests_manually_enhanced(guests_data, categories, command_type)
 
-        # Verificar que todos los invitados tengan email (importante)
-        has_email_mismatch = False
+        if not structured_guests: # Si la extracción manual también falló
+            logger.error("La extracción manual de invitados devolvió una lista vacía o None.")
+            return 0 # Indicar que no se añadió nada
+
+        # --- Validar invitados estructurados ---
         valid_guests = []
-        if not structured_guests: # Si la extracción manual falló
-             logger.error("La extracción manual de invitados devolvió una lista vacía o None.")
-             return 0 # O un código de error diferente a -1
-
+        invalid_entries_found = False
         for guest in structured_guests:
-             # Asegurarse que guest sea un diccionario y tenga email
-             if isinstance(guest, dict) and guest.get("email"):
-                 # Validar email básico
-                 if re.match(r"[^@]+@[^@]+\.[^@]+", guest["email"]):
-                     valid_guests.append(guest)
-                 else:
-                     logger.warning(f"Formato de email inválido detectado: {guest.get('email')} para {guest.get('nombre')}")
-                     has_email_mismatch = True # Considerar inválido si el formato es malo
-             else:
-                 has_email_mismatch = True
-                 logger.warning(f"Invitado sin email o formato incorrecto detectado: {guest}")
+            # Verificar que sea diccionario y tenga email y al menos nombre
+            if isinstance(guest, dict) and guest.get("email") and guest.get("nombre"):
+                # Validar email básico
+                if re.match(r"[^@]+@[^@]+\.[^@]+", guest["email"]):
+                    valid_guests.append(guest)
+                else:
+                    logger.warning(f"Formato de email inválido: {guest.get('email')} para {guest.get('nombre')}")
+                    invalid_entries_found = True
+            else:
+                logger.warning(f"Invitado incompleto (falta email o nombre): {guest}")
+                invalid_entries_found = True
 
-        # Si hay problemas con emails faltantes o inválidos, devolver error específico
-        if has_email_mismatch:
-            logger.error("Se detectaron invitados sin email válido.")
+        # Si se encontraron entradas inválidas, devolver error de validación
+        if invalid_entries_found:
+            logger.error("Se detectaron invitados sin email válido o nombre.")
             return -1  # Código especial para indicar error de validación
 
-        # Crear filas para añadir a la hoja
+        # --- Crear filas para añadir a la hoja (NUEVO FORMATO) ---
         rows_to_add = []
         for guest in valid_guests:
+            # Combinar nombre y apellido en una sola celda
+            full_name = f"{guest.get('nombre', '')} {guest.get('apellido', '')}".strip()
             rows_to_add.append([
-                guest.get("nombre", ""),
-                guest.get("apellido", ""),
-                guest.get("email", ""),
-                guest.get("genero", "Otro"),
-                phone_number, # El número del "Publica" que los añadió
-                event_name,   # --- NUEVO: Añadir el nombre del evento ---
-                timestamp     # --- NUEVO: Añadir timestamp ---
+                full_name,                    # Columna A: Nombre y Apellido
+                guest.get("email", ""),       # Columna B: Email
+                guest.get("genero", "Otro"),  # Columna C: Genero
+                phone_number,                 # Columna D: Publica (Número normalizado)
+                event_name,                   # Columna E: Evento
+                timestamp                     # Columna F: Timestamp
             ])
 
-        # Agregar a la hoja
+        # --- Agregar a la hoja ---
         if rows_to_add:
-            sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
-            logger.info(f"Agregados {len(rows_to_add)} invitados para el evento '{event_name}' por {phone_number}")
+            try:
+                sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
+                logger.info(f"Agregados {len(rows_to_add)} invitados para evento '{event_name}' por {phone_number}")
+                return len(rows_to_add)
+            except gspread.exceptions.APIError as e:
+                 logger.error(f"Error de API de Google Sheets al agregar filas: {e}")
+                 return 0 # Indicar fallo
+            except Exception as e:
+                 logger.error(f"Error inesperado en append_rows: {e}")
+                 import traceback
+                 logger.error(traceback.format_exc())
+                 return 0
+        else:
+             logger.warning("No se generaron filas válidas para añadir a la hoja.")
+             # Si structured_guests no estaba vacío pero valid_guests sí, podría ser -1 por validación
+             # Si ambos estaban vacíos, 0 es correcto.
+             return 0
 
-        return len(rows_to_add)
-    except gspread.exceptions.APIError as e:
-        logger.error(f"Error de API de Google Sheets al agregar invitados: {e}")
-        # Podrías intentar reconectar o devolver un error específico
-        return 0 # Indicar fallo genérico
     except Exception as e:
-        logger.error(f"Error inesperado en add_guests_to_sheet: {e}")
+        logger.error(f"Error GRANDE en add_guests_to_sheet: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return 0 # Indicar fallo genérico
@@ -1353,22 +1450,21 @@ def whatsapp_reply():
                         # PASO 4: Enviar instrucciones de formato
                         response_text = (
                             f"Perfecto, evento seleccionado: *{selected_event}*.\n\n"
-                            "Para anotar tus invitados, envíame los datos en el siguiente formato EXACTO:\n\n"
-                            "*Hombres:*\n"
+                            "Ahora envíame la lista de invitados. Formato:\n\n"
+                            "*Hombres:* (Opcional)\n"
                             "Nombre Apellido\n"
                             "Nombre Apellido\n"
-                            "...\n"
-                            "Email@ejemplo.com\n"
-                            "Email@ejemplo.com\n"
+                            "...\n\n" # Línea vacía opcional entre nombres y emails
+                            "email1@ejemplo.com\n"
+                            "email2@ejemplo.com\n"
                             "...\n\n"
-                            "*Mujeres:*\n"
+                            "*Mujeres:* (Opcional)\n"
                             "Nombre Apellido\n"
-                            "Nombre Apellido\n"
-                            "...\n"
-                            "Email@ejemplo.com\n"
-                            "Email@ejemplo.com\n"
                             "...\n\n"
-                            "⚠️ *Importante*: Debe haber la misma cantidad de nombres y emails en cada sección (Hombres/Mujeres)."
+                            "email3@ejemplo.com\n"
+                            "...\n\n"
+                            "⚠️ *Importante*: Primero todos los nombres, luego todos los emails. La cantidad debe coincidir.\n"
+                            "Escribe 'cancelar' para elegir otro evento."
                         )
                         user_states[sender_phone_normalized] = {
                             'state': STATE_AWAITING_GUEST_DATA,
