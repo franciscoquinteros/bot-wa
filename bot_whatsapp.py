@@ -206,13 +206,6 @@ class SheetsConnection:
         except gspread.exceptions.SpreadsheetNotFound:
             logger.error(f"Error: No se encontró el Google Sheet llamado 'n8n sheet'. Verifica el nombre.")
             raise
-        except gspread.exceptions.WorksheetNotFound:
-            logger.error(f"Error: No se encontró la hoja 'Invitados' en el Google Sheet. Verifica el nombre.")
-            # Podrías crearla si no existe: self.guest_sheet = self.spreadsheet.add_worksheet(title="Invitados", rows="1", cols="6")
-            raise
-        except Exception as e:
-            logger.error(f"Error al conectar con Google Sheets: {e}")
-            raise
 
         # ---> NUEVO: Verificar existencia hoja Telefonos <---
         try:
@@ -220,7 +213,8 @@ class SheetsConnection:
         except gspread.exceptions.WorksheetNotFound:
                 logger.error("¡CRÍTICO! Hoja 'Telefonos' para autorización no encontrada. El bot no responderá a nadie.")
                 self.phone_sheet_obj = None # Important for the check later
-
+                self._phone_cache = None
+                self._phone_cache_last_refresh = 0
                 logger.info("Conexión con Google Sheets establecida/verificada.")
         except gspread.exceptions.SpreadsheetNotFound:
             logger.error(f"Error CRÍTICO: No se encontró el Google Sheet llamado 'n8n sheet'. Verifica el nombre.")
@@ -245,9 +239,9 @@ class SheetsConnection:
             return None
 
     # --- NUEVO: Función para obtener eventos disponibles ---
-    def get_available_events(sheet_conn):
+    def get_available_events(self):
         try:
-            event_sheet = sheet_conn.get_event_sheet()
+            event_sheet = self.get_event_sheet()
             if event_sheet:
                 events = event_sheet.col_values(1)
                 return [event for event in events if event]
