@@ -201,7 +201,7 @@ class SheetsConnection:
             # Necesitarás una hoja para los invitados. Puedes tener otra para los eventos.
             self.spreadsheet = self.client.open("n8n sheet") # Nombre del Archivo Google Sheet
             self.guest_sheet = self.spreadsheet.worksheet("Invitados") # Nombre de la Hoja para invitados
-            # self.event_sheet = self.spreadsheet.worksheet("Eventos") # Si tienes hoja separada para eventos
+            self.event_sheet = self.spreadsheet.worksheet("Eventos") # Si tienes hoja separada para eventos
             logger.info("Conexión con Google Sheets establecida con éxito")
         except gspread.exceptions.SpreadsheetNotFound:
             logger.error(f"Error: No se encontró el Google Sheet llamado 'n8n sheet'. Verifica el nombre.")
@@ -215,47 +215,34 @@ class SheetsConnection:
             raise
         
     def get_sheet(self):
-        return self.sheet
+        return self.spreadsheet
 
-def get_guest_sheet(self):
+    def get_guest_sheet(self):
         # Podrías añadir lógica para refrescar la conexión si es necesario aquí
         return self.guest_sheet
 
-# --- NUEVO: Función para obtener la hoja de eventos (si la usas) ---
-def get_event_sheet(self):
-    try:
-        return self.spreadsheet.worksheet("Eventos")
-    except gspread.exceptions.WorksheetNotFound:
-        logger.error("Hoja 'Eventos' no encontrada.")
-        return None
+    # --- NUEVO: Función para obtener la hoja de eventos (si la usas) ---
+    def get_event_sheet(self):
+        try:
+            return self.spreadsheet.worksheet("Eventos")
+        except gspread.exceptions.WorksheetNotFound:
+            logger.error("Hoja 'Eventos' no encontrada.")
+            return None
 
-# --- NUEVO: Función para obtener eventos disponibles ---
-def get_available_events(sheet_conn):
-    """
-    Obtiene la lista de eventos disponibles desde Google Sheets.
-    ¡DEBES IMPLEMENTAR ESTO SEGÚN TU HOJA!
-    """
-    try:
-        # Ejemplo: Asume que los eventos están en la columna A de la hoja "Eventos"
-         event_sheet = sheet_conn.get_event_sheet()
-         if event_sheet:
-             events = event_sheet.col_values(1) # Obtiene todos los valores de la primera columna (A)
-             return [event for event in events if event] # Filtra vacíos
-         else:
-             logger.warning("Hoja de eventos no disponible. Usando eventos de ejemplo.")
-             return ["Fiesta Verano 2025", "Evento Corporativo Q2", "Lanzamiento X"]
+    # --- NUEVO: Función para obtener eventos disponibles ---
+    def get_available_events(sheet_conn):
+        try:
+            event_sheet = sheet_conn.get_event_sheet()
+            if event_sheet:
+                events = event_sheet.col_values(1)
+                return [event for event in events if event]
+            else:
+                logger.warning("Hoja de eventos no disponible. Usando eventos de ejemplo.")
+                return ["Fiesta Verano 2025", "Evento Corporativo Q2", "Lanzamiento X"]
+        except Exception as e:
+            logger.error(f"Error al obtener eventos: {e}")
+            return []
 
-        # ---- Alternativa: Si los eventos están en la misma hoja de invitados o en otra fija ----
-        # guest_sheet = sheet_conn.get_guest_sheet()
-        # # Ejemplo: Leer de un rango específico como 'Config!A1:A10'
-        # events = sheet_conn.client.open("n8n sheet").worksheet("Config").range('A1:A10')
-        # return [cell.value for cell in events if cell.value]
-
-    
-
-    except Exception as e:
-        logger.error(f"Error al obtener eventos: {e}")
-        return [] # Devuelve lista vacía en caso de error
 
 
 # Funciones de análisis de sentimientos
