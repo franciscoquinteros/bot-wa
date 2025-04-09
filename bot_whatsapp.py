@@ -229,6 +229,8 @@ class SheetsConnection:
             # ---> ¡AQUÍ! Inicializar atributos de caché en la instancia SIEMPRE <---
             self._phone_cache = None
             self._phone_cache_last_refresh = 0
+            self._pr_name_map_cache = None # NUEVO: Cache para el mapeo tel -> nombre PR
+            self._pr_name_map_last_refresh = 0 # NUEVO: Timestamp para caché de mapeo
             # _phone_cache_interval es constante de clase, está bien así.
 
             logger.info("Conexión y configuración inicial de SheetsConnection completada.")
@@ -444,6 +446,56 @@ def analyze_guests_with_ai(guest_list, category_info=None):
     except Exception as e:
         logger.error(f"Error al analizar invitados con OpenAI: {e}")
         return None
+# --- NUEVO: Método para obtener el mapeo Telefono -> Nombre PR ---
+def get_phone_pr_mapping(self):
+        """
+        Obtiene un diccionario que mapea números de teléfono normalizados
+        a los nombres de PR correspondientes desde la hoja 'Telefonos'.
+        Usa caché para eficiencia.
+        """
+        now = time.time()
+        # Usar _phone_cache_interval también para este mapeo
+        if self._pr_name_map_cache is not None and now - self._pr_name_map_last_refresh < self._phone_cache_interval:
+            return self._pr_name_map_cache
+
+        logger.info("Refrescando caché de mapeo Telefono -> Nombre PR...")
+        phone_to_pr_map = {}
+        try:
+            phone_sheet = self.phone_sheet_obj
+            if phone_sheet:
+                # Leer ambas columnas (A=Telefonos, B=PR) - Ajusta índices si es necesario
+                # Usamos get_all_values para asegurar que las filas coincidan
+                all_values = phone_sheet.get_all_values()
+                if len(all_values) > 1: # Asegurar que hay datos además del encabezado
+                    # Asumimos encabezados en la fila 1, empezamos desde la fila 2 (índice 1)
+                    for row in all_values[1:]:
+                        if len(row) >= 2: # Asegurar que la fila tiene al menos 2 columnas
+                            raw_phone = row[0] # Columna A (índice 0)
+                            pr_name = row[1]   # Columna B (índice 1)
+                            if raw_phone and pr_name: # Solo procesar si ambos tienen valor
+                                normalized_phone = re.sub(r'\D', '', str(raw_phone))
+                                if normalized_phone:
+                                    phone_to_pr_map[normalized_phone] = pr_name.strip()
+                        else:
+                            logger.warning(f"Fila incompleta en hoja 'Telefonos': {row}")
+                logger.info(f"Creado mapeo para {len(phone_to_pr_map)} teléfonos a nombres PR.")
+            else:
+                logger.error("No se puede refrescar mapeo PR porque hoja 'Telefonos' no está disponible.")
+                # Mantenemos el caché vacío o el anterior si hubo error temporal
+                phone_to_pr_map = self._pr_name_map_cache if self._pr_name_map_cache is not None else {}
+
+            self._pr_name_map_cache = phone_to_pr_map
+            self._pr_name_map_last_refresh = now
+            return self._pr_name_map_cache
+
+        except gspread.exceptions.APIError as e:
+            logger.error(f"Error de API al leer la hoja 'Telefonos' para mapeo PR: {e}. Usando caché anterior si existe.")
+            return self._pr_name_map_cache if self._pr_name_map_cache is not None else {}
+        except Exception as e:
+            logger.error(f"Error inesperado al obtener mapeo PR: {e}. Usando caché anterior si existe.")
+            return self._pr_name_map_cache if self._pr_name_map_cache is not None else {}
+
+
     
 def extract_guests_from_split_format(lines):
     """
@@ -977,18 +1029,20 @@ def extract_guest_info_from_line(line, category=None):
     
     return guest_info
 
-def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, categories=None, command_type='add_guests'):
+def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn, categories=None, command_type='add_guests'):
     """
-    Agrega invitados a la hoja con información estructurada, incluyendo el evento.
+    Agrega invitados a la hoja con información estructurada, incluyendo el evento
+    y usando el nombre del PR en lugar del número en la columna 'Publica'.
     ADAPTADO para columnas: Nombre y Apellido | Email | Genero | Publica | Evento | Timestamp
 
     Args:
-        sheet: Objeto de hoja de Google Sheets
-        guests_data: Lista de líneas crudas con datos de invitados (para ser procesadas)
-        phone_number: Número de teléfono del anfitrión (Publica) - Normalizado
+        sheet: Objeto de hoja de Google Sheets ('Invitados')
+        guests_data: Lista de líneas crudas con datos de invitados
+        phone_number: Número de teléfono del anfitrión (NORMALIZADO)
         event_name: Nombre del evento seleccionado
-        categories (dict, optional): Información sobre categorías detectadas por parse_message_enhanced
-        command_type (str): Tipo de comando detectado ('add_guests' o 'add_guests_split')
+        sheet_conn: Instancia de SheetsConnection para acceder al mapeo PR <--- NUEVO
+        categories (dict, optional): Información sobre categorías detectadas
+        command_type (str): Tipo de comando detectado
 
     Returns:
         int: Número de invitados añadidos (-1 si hay error de validación)
@@ -1061,19 +1115,34 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, categories
         if invalid_entries_found:
             logger.error("Se detectaron invitados sin email válido o nombre.")
             return -1  # Código especial para indicar error de validación
+        
+        # --- NUEVO: Obtener Nombre del PR ---
+        pr_name = phone_number # Valor por defecto si no se encuentra el mapeo o el número
+        try:
+            # Obtener el mapeo desde la instancia de conexión
+            phone_to_pr_map = sheet_conn.get_phone_pr_mapping()
+            # Buscar el nombre del PR usando el número normalizado que recibimos
+            pr_name_found = phone_to_pr_map.get(phone_number)
+            if pr_name_found:
+                pr_name = pr_name_found # Usar el nombre encontrado
+                logger.info(f"Nombre PR encontrado para {phone_number}: {pr_name}")
+            else:
+                logger.warning(f"No se encontró nombre PR para el número {phone_number} en la hoja 'Telefonos'. Se usará el número como fallback.")
+        except Exception as map_err:
+            logger.error(f"Error al obtener/buscar en el mapeo PR para {phone_number}: {map_err}. Se usará el número como fallback.")
+            # pr_name ya tiene el número como fallback
 
-        # --- Crear filas para añadir a la hoja (NUEVO FORMATO) ---
+        # --- Crear filas para añadir a la hoja (MODIFICADO) ---
         rows_to_add = []
         for guest in valid_guests:
-            # Combinar nombre y apellido en una sola celda
             full_name = f"{guest.get('nombre', '')} {guest.get('apellido', '')}".strip()
             rows_to_add.append([
-                full_name,                    # Columna A: Nombre y Apellido
-                guest.get("email", ""),       # Columna B: Email
-                guest.get("genero", "Otro"),  # Columna C: Genero
-                phone_number,                 # Columna D: Publica (Número normalizado)
-                event_name,                   # Columna E: Evento
-                timestamp                     # Columna F: Timestamp
+                full_name,                      # Columna A: Nombre y Apellido
+                guest.get("email", ""),         # Columna B: Email
+                guest.get("genero", "Otro"),    # Columna C: Genero
+                pr_name,                        # Columna D: Publica (Nombre del PR o número fallback) <--- MODIFICADO
+                event_name,                     # Columna E: Evento
+                timestamp                       # Columna F: Timestamp
             ])
 
         # --- Agregar a la hoja ---
@@ -1452,6 +1521,7 @@ def whatsapp_reply():
                         data_lines, # <- Pasar la variable
                         sender_phone_normalized,
                         selected_event,
+                        sheet_conn,
                         categories, # <- Pasar la variable
                         command_type # <- Pasar la variable
                 )
