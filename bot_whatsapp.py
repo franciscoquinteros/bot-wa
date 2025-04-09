@@ -265,16 +265,26 @@ class SheetsConnection:
 
     # --- NUEVO: Función para obtener eventos disponibles ---
     def get_available_events(self):
+        """ Obtiene la lista de eventos desde la hoja 'Eventos', ignorando el encabezado A1. """
         try:
-            event_sheet = self.get_event_sheet()
+            event_sheet = self.get_event_sheet() # Usa el método que devuelve self.event_sheet
             if event_sheet:
-                events = event_sheet.col_values(1)
-                return [event for event in events if event]
+                # Obtener todos los valores de la primera columna
+                all_event_values = event_sheet.col_values(1)
+                # **CORRECCIÓN:** Ignorar el primer elemento (A1) y filtrar vacíos
+                events = [event for event in all_event_values[1:] if event]
+                logger.info(f"Eventos disponibles encontrados (sin encabezado): {events}")
+                # CORREGIDO: Devolver la lista completa 'events'
+                return events # <---- CORREGIDO
             else:
-                logger.warning("Hoja de eventos no disponible. Usando eventos de ejemplo.")
-                return ["Fiesta Verano 2025", "Evento Corporativo Q2", "Lanzamiento X"]
+                # Hoja no encontrada durante _connect
+                logger.warning("Hoja 'Eventos' no disponible. No se pueden listar eventos.")
+                return [] # Devolver lista vacía si la hoja no existe
+        except gspread.exceptions.APIError as e:
+             logger.error(f"Error de API al leer eventos: {e}")
+             return []
         except Exception as e:
-            logger.error(f"Error al obtener eventos: {e}")
+            logger.error(f"Error inesperado al obtener eventos: {e}")
             return []
     
     # --- NUEVO: Método para obtener y cachear números autorizados ---
@@ -315,6 +325,55 @@ class SheetsConnection:
             logger.error(f"Error inesperado al obtener números autorizados: {e}. Usando caché anterior si existe.")
             return self._phone_cache if self._phone_cache is not None else set()
 
+    # --- Método para obtener el mapeo Telefono -> Nombre PR ---
+
+    def get_phone_pr_mapping(self):
+        """
+        Obtiene un diccionario que mapea números de teléfono normalizados
+        a los nombres de PR correspondientes desde la hoja 'Telefonos'.
+        Usa caché para eficiencia.
+        """
+        now = time.time()
+        # Usar _phone_cache_interval también para este mapeo
+        if self._pr_name_map_cache is not None and now - self._pr_name_map_last_refresh < self._phone_cache_interval:
+            return self._pr_name_map_cache
+
+        logger.info("Refrescando caché de mapeo Telefono -> Nombre PR...")
+        phone_to_pr_map = {}
+        try:
+            phone_sheet = self.phone_sheet_obj
+            if phone_sheet:
+                # Leer ambas columnas (A=Telefonos, B=PR) - Ajusta índices si es necesario
+                # Usamos get_all_values para asegurar que las filas coincidan
+                all_values = phone_sheet.get_all_values()
+                if len(all_values) > 1: # Asegurar que hay datos además del encabezado
+                    # Asumimos encabezados en la fila 1, empezamos desde la fila 2 (índice 1)
+                    for row in all_values[1:]:
+                        if len(row) >= 2: # Asegurar que la fila tiene al menos 2 columnas
+                            raw_phone = row[0] # Columna A (índice 0)
+                            pr_name = row[1]   # Columna B (índice 1)
+                            if raw_phone and pr_name: # Solo procesar si ambos tienen valor
+                                normalized_phone = re.sub(r'\D', '', str(raw_phone))
+                                if normalized_phone:
+                                    phone_to_pr_map[normalized_phone] = pr_name.strip()
+                        else:
+                            logger.warning(f"Fila incompleta en hoja 'Telefonos': {row}")
+                logger.info(f"Creado mapeo para {len(phone_to_pr_map)} teléfonos a nombres PR.")
+            else:
+                logger.error("No se puede refrescar mapeo PR porque hoja 'Telefonos' no está disponible.")
+                # Mantenemos el caché vacío o el anterior si hubo error temporal
+                phone_to_pr_map = self._pr_name_map_cache if self._pr_name_map_cache is not None else {}
+
+            self._pr_name_map_cache = phone_to_pr_map
+            self._pr_name_map_last_refresh = now
+            return self._pr_name_map_cache
+
+        except gspread.exceptions.APIError as e:
+            logger.error(f"Error de API al leer la hoja 'Telefonos' para mapeo PR: {e}. Usando caché anterior si existe.")
+            return self._pr_name_map_cache if self._pr_name_map_cache is not None else {}
+        except Exception as e:
+            logger.error(f"Error inesperado al obtener mapeo PR: {e}. Usando caché anterior si existe.")
+            return self._pr_name_map_cache if self._pr_name_map_cache is not None else {}
 
 
 # Funciones de análisis de sentimientos
@@ -446,55 +505,6 @@ def analyze_guests_with_ai(guest_list, category_info=None):
     except Exception as e:
         logger.error(f"Error al analizar invitados con OpenAI: {e}")
         return None
-# --- NUEVO: Método para obtener el mapeo Telefono -> Nombre PR ---
-def get_phone_pr_mapping(self):
-        """
-        Obtiene un diccionario que mapea números de teléfono normalizados
-        a los nombres de PR correspondientes desde la hoja 'Telefonos'.
-        Usa caché para eficiencia.
-        """
-        now = time.time()
-        # Usar _phone_cache_interval también para este mapeo
-        if self._pr_name_map_cache is not None and now - self._pr_name_map_last_refresh < self._phone_cache_interval:
-            return self._pr_name_map_cache
-
-        logger.info("Refrescando caché de mapeo Telefono -> Nombre PR...")
-        phone_to_pr_map = {}
-        try:
-            phone_sheet = self.phone_sheet_obj
-            if phone_sheet:
-                # Leer ambas columnas (A=Telefonos, B=PR) - Ajusta índices si es necesario
-                # Usamos get_all_values para asegurar que las filas coincidan
-                all_values = phone_sheet.get_all_values()
-                if len(all_values) > 1: # Asegurar que hay datos además del encabezado
-                    # Asumimos encabezados en la fila 1, empezamos desde la fila 2 (índice 1)
-                    for row in all_values[1:]:
-                        if len(row) >= 2: # Asegurar que la fila tiene al menos 2 columnas
-                            raw_phone = row[0] # Columna A (índice 0)
-                            pr_name = row[1]   # Columna B (índice 1)
-                            if raw_phone and pr_name: # Solo procesar si ambos tienen valor
-                                normalized_phone = re.sub(r'\D', '', str(raw_phone))
-                                if normalized_phone:
-                                    phone_to_pr_map[normalized_phone] = pr_name.strip()
-                        else:
-                            logger.warning(f"Fila incompleta en hoja 'Telefonos': {row}")
-                logger.info(f"Creado mapeo para {len(phone_to_pr_map)} teléfonos a nombres PR.")
-            else:
-                logger.error("No se puede refrescar mapeo PR porque hoja 'Telefonos' no está disponible.")
-                # Mantenemos el caché vacío o el anterior si hubo error temporal
-                phone_to_pr_map = self._pr_name_map_cache if self._pr_name_map_cache is not None else {}
-
-            self._pr_name_map_cache = phone_to_pr_map
-            self._pr_name_map_last_refresh = now
-            return self._pr_name_map_cache
-
-        except gspread.exceptions.APIError as e:
-            logger.error(f"Error de API al leer la hoja 'Telefonos' para mapeo PR: {e}. Usando caché anterior si existe.")
-            return self._pr_name_map_cache if self._pr_name_map_cache is not None else {}
-        except Exception as e:
-            logger.error(f"Error inesperado al obtener mapeo PR: {e}. Usando caché anterior si existe.")
-            return self._pr_name_map_cache if self._pr_name_map_cache is not None else {}
-
 
     
 def extract_guests_from_split_format(lines):
