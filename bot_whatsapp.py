@@ -448,115 +448,126 @@ def analyze_guests_with_ai(guest_list, category_info=None):
 def extract_guests_from_split_format(lines):
     """
     Procesa el formato BLOQUES: Nombres primero, luego Emails, opcionalmente bajo categorías.
-
-    Ejemplo:
-    Hombres:
-    juan gomez
-    facundo dari
-
-    juangomez@gmail.com
-    facundodari@gmail.com
-
-    Mujeres:
-    ana paula
-    maria diaz
-
-    anapaula@email.com
-    mariadiaz@email.com
+    Versión REVISADA para mayor robustez.
 
     Args:
         lines (list): Lista de líneas crudas del mensaje del usuario.
 
     Returns:
-        list: Lista de diccionarios con información estructurada de invitados
+        list: Lista de diccionarios con info estructurada, o lista vacía si hay error grave.
               {'nombre': str, 'apellido': str, 'email': str, 'genero': str}
     """
     guests = []
-    names_by_category = {'Hombres': [], 'Mujeres': [], 'General': []}
-    emails_by_category = {'Hombres': [], 'Mujeres': [], 'General': []}
-    category_map = {"Hombres": "Masculino", "Mujeres": "Femenino", "General": "Otro"}
+    # Usaremos listas separadas por categoría para nombres y emails
+    data_by_category = {} # Ejemplo: {'Hombres': {'names': [], 'emails': []}, 'Mujeres': {...}}
+    category_map = {"Hombres": "Masculino", "Mujeres": "Femenino"}
 
-    current_category_key = 'General'
-    parsing_mode = 'names' # Empezamos buscando nombres
+    current_category_key = None # Empezar sin categoría definida
+    parsing_mode = 'category_or_names' # Estados: category_or_names, names, emails
 
-    logger.info("Iniciando extracción en formato dividido (Nombres -> Emails)...")
+    logger.info("Iniciando extracción REVISADA formato dividido (Nombres -> Emails)...")
 
     for line in lines:
         line = line.strip()
         if not line:
-            # Las líneas vacías pueden usarse como separadores, no cambian modo ni categoría
-            continue
+            continue # Ignorar líneas vacías completamente
 
-        # --- Detectar Cambios de Categoría ---
+        # --- Detectar Categorías ---
+        is_category = False
+        potential_category_key = None
         if line.lower().startswith('hombres'):
-            current_category_key = 'Hombres'
-            parsing_mode = 'names' # Reiniciar a buscar nombres para la nueva categoría
-            logger.debug(f"Cambiado a categoría: {current_category_key}, modo: {parsing_mode}")
-            continue # Procesada la línea de categoría
+            potential_category_key = 'Hombres'
+            is_category = True
         elif line.lower().startswith('mujeres'):
-            current_category_key = 'Mujeres'
-            parsing_mode = 'names' # Reiniciar a buscar nombres
-            logger.debug(f"Cambiado a categoría: {current_category_key}, modo: {parsing_mode}")
-            continue # Procesada la línea de categoría
+            potential_category_key = 'Mujeres'
+            is_category = True
+
+        if is_category:
+            current_category_key = potential_category_key
+            # Si la categoría no existe en nuestro dict, la inicializamos
+            if current_category_key not in data_by_category:
+                data_by_category[current_category_key] = {'names': [], 'emails': []}
+            parsing_mode = 'names' # Después de una categoría, esperamos nombres
+            logger.debug(f"Categoría detectada/cambiada a: '{current_category_key}', modo: {parsing_mode}")
+            continue # Línea de categoría procesada
+
+        # Si no se definió una categoría explícita, usamos 'General'
+        if current_category_key is None:
+             current_category_key = 'General'
+             if current_category_key not in data_by_category:
+                 data_by_category[current_category_key] = {'names': [], 'emails': []}
+             # Si la primera línea útil no es categoría, asumimos que es un nombre
+             parsing_mode = 'names'
+
 
         # --- Detectar Emails ---
-        # Usar regex más simple para detectar potencial email
-        if '@' in line and '.' in line.split('@')[-1] and len(line.split('@')[0]) > 0:
-            # Si encontramos un email, cambiamos el modo a 'emails' PARA LA CATEGORÍA ACTUAL
-            if parsing_mode == 'names':
-                 logger.debug(f"Primer email detectado ('{line}') para categoría '{current_category_key}'. Cambiando a modo emails.")
-                 parsing_mode = 'emails'
+        is_email = False
+        # Regex más estricto para emails válidos
+        if re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", line):
+             is_email = True
 
-            # Validar formato un poco más (aunque la validación final está en add_guests...)
-            if re.match(r"[^@\s]+@[^@\s]+\.[^@\s]+", line):
-                 emails_by_category[current_category_key].append(line)
-                 logger.debug(f"Email agregado a '{current_category_key}': {line}")
-            else:
-                 logger.warning(f"Línea '{line}' parece email pero formato inválido en categoría '{current_category_key}'. Ignorando.")
-            continue # Procesada la línea de email
-
-        # --- Si no es Vacía, Categoría ni Email: debe ser un Nombre ---
-        # Solo agregar si estamos en modo 'names'
-        if parsing_mode == 'names':
-             # Asumir que cualquier otra línea no vacía es un nombre
-             # Evitar agregar líneas muy cortas o con caracteres extraños si es necesario
-             if len(line) > 2: # Mínimo 3 caracteres para un nombre? Ajustar si es necesario
-                 names_by_category[current_category_key].append(line)
-                 logger.debug(f"Nombre agregado a '{current_category_key}': {line}")
+        if is_email:
+             # Cambiar a modo email si veníamos de modo names
+             if parsing_mode != 'emails':
+                  logger.debug(f"Cambiando a modo 'emails' para categoría '{current_category_key}' al encontrar: {line}")
+                  parsing_mode = 'emails'
+             # Añadir email a la categoría actual
+             if current_category_key in data_by_category: # Asegurarse que la categoría fue inicializada
+                data_by_category[current_category_key]['emails'].append(line)
+                logger.debug(f"Email agregado a '{current_category_key}': {line}")
              else:
-                 logger.warning(f"Línea '{line}' ignorada (demasiado corta) en categoría '{current_category_key}' mientras se buscaban nombres.")
+                 # Esto no debería pasar si la lógica de inicialización es correcta
+                 logger.error(f"Intento de agregar email '{line}' a categoría no inicializada '{current_category_key}'")
+             continue # Línea de email procesada
+
+        # --- Si no es Vacía, Categoría ni Email: Asumir Nombre ---
+        # Solo si estamos en modo 'names' (o 'category_or_names' que cambia a 'names')
+        if parsing_mode == 'names' or parsing_mode == 'category_or_names':
+             if parsing_mode == 'category_or_names': # Primera línea útil es un nombre
+                 parsing_mode = 'names'
+
+             # Validar que parezca un nombre (letras y espacios) y no sea demasiado corto
+             if re.match(r"^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s']+$", line) and len(line) > 2:
+                 if current_category_key in data_by_category:
+                     data_by_category[current_category_key]['names'].append(line)
+                     logger.debug(f"Nombre agregado a '{current_category_key}': {line}")
+                 else:
+                     logger.error(f"Intento de agregar nombre '{line}' a categoría no inicializada '{current_category_key}'")
+             else:
+                 logger.warning(f"Línea '{line}' ignorada en modo '{parsing_mode}' para categoría '{current_category_key}'. No parece nombre válido.")
         elif parsing_mode == 'emails':
-             # Encontramos una línea que no es email DESPUÉS de empezar a leer emails
-             # Podría ser un error del usuario o el inicio de otra categoría sin header explícito.
-             # Por ahora, lo ignoramos y logueamos. Podría requerir lógica más compleja si el formato varía mucho.
-             logger.warning(f"Línea '{line}' encontrada después de emails en categoría '{current_category_key}'. Ignorando.")
+             # Ignorar texto después de empezar emails
+             logger.warning(f"Ignorando línea '{line}' en modo 'emails' para categoría '{current_category_key}'.")
 
 
     # --- Emparejar Nombres y Emails por Categoría ---
     logger.info("Emparejando nombres y emails recolectados...")
-    for category_key in ['Hombres', 'Mujeres', 'General']:
-        names = names_by_category[category_key]
-        emails = emails_by_category[category_key]
-        genero = category_map[category_key]
+    error_found_in_pairing = False
+    for category_key, data in data_by_category.items():
+        names = data['names']
+        emails = data['emails']
+        # Usar 'Otro' si la categoría es 'General' o no está en el map
+        genero = category_map.get(category_key, "Otro")
 
-        logger.info(f"Categoría '{category_key}': {len(names)} nombres, {len(emails)} emails.")
+        logger.info(f"Procesando categoría '{category_key}' ({genero}): {len(names)} nombres, {len(emails)} emails.")
 
         if not names and not emails:
             continue # Saltar categoría vacía
 
         if len(names) != len(emails):
-            logger.error(f"¡ERROR DE FORMATO! Desbalance en categoría '{category_key}': {len(names)} nombres vs {len(emails)} emails. Saltando esta categoría.")
-            # Considerar si devolver un error más explícito o intentar emparejar min(len(names), len(emails))
-            continue # Saltar esta categoría
+            logger.error(f"¡ERROR DE FORMATO! Desbalance en categoría '{category_key}': {len(names)} nombres vs {len(emails)} emails. ¡No se agregarán invitados de esta categoría!")
+            error_found_in_pairing = True
+            continue # Saltar esta categoría por error grave
 
         if len(names) == 0: # Si hay emails pero no nombres (o viceversa, cubierto arriba)
-             logger.error(f"Categoría '{category_key}' tiene emails pero no nombres. Saltando.")
+             logger.error(f"Categoría '{category_key}' tiene {len(emails)} emails pero 0 nombres. Saltando.")
+             error_found_in_pairing = True
              continue
 
         # Emparejar uno a uno
         for i in range(len(names)):
-            full_name = names[i]
-            email = emails[i]
+            full_name = names[i].strip()
+            email = emails[i].strip() # Asegurar limpieza
             name_parts = full_name.split()
             nombre = ""
             apellido = ""
@@ -566,17 +577,25 @@ def extract_guests_from_split_format(lines):
                 if len(name_parts) > 1:
                     apellido = " ".join(name_parts[1:])
             else:
-                logger.warning(f"Nombre vacío detectado en categoría '{category_key}' para email '{email}'. Saltando entrada.")
-                continue # No se puede agregar sin nombre
+                # Esto no debería ocurrir si validamos antes, pero por si acaso
+                logger.warning(f"Nombre vacío detectado emparejado con email '{email}'. Saltando.")
+                error_found_in_pairing = True
+                continue
 
             guest_info = {
                 "nombre": nombre,
                 "apellido": apellido,
                 "email": email,
-                "genero": genero
+                "genero": genero # Usar el género de la categoría
             }
             guests.append(guest_info)
-            logger.debug(f"Invitado emparejado: {full_name} - {email} ({genero})")
+            logger.debug(f"Invitado emparejado OK: {full_name} - {email} ({genero})")
+
+    # Si hubo errores graves de formato (desbalance), podríamos querer indicarlo
+    # if error_found_in_pairing:
+        # Podríamos devolver None o una bandera especial, pero por ahora devolvemos los que sí se pudieron emparejar
+        # logger.error("Se encontraron errores de formato (desbalance nombre/email) en al menos una categoría.")
+        # return None # Opcional: Fallar toda la operación si hay errores
 
     logger.info(f"Extracción formato dividido completada. Total invitados estructurados: {len(guests)}")
     return guests
