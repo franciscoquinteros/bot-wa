@@ -1226,7 +1226,7 @@ def whatsapp_reply():
             parsed_command = parse_message_enhanced(incoming_msg)
             if parsed_command['command_type'] == 'saludo':
                  # PASO 2: Responder con eventos disponibles
-                 available_events = get_available_events(sheet_conn)
+                 available_events = sheet_conn.get_available_events()
                  if not available_events:
                      response_text = "¡Hola! 👋 No encontré eventos disponibles para anotar invitados en este momento."
                      user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None} # Reset state
