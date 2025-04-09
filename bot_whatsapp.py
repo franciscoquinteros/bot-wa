@@ -213,6 +213,21 @@ class SheetsConnection:
         except Exception as e:
             logger.error(f"Error al conectar con Google Sheets: {e}")
             raise
+
+        # ---> NUEVO: Verificar existencia hoja Telefonos <---
+        try:
+            self.phone_sheet_obj = self.spreadsheet.worksheet("Telefonos")
+        except gspread.exceptions.WorksheetNotFound:
+                logger.error("¡CRÍTICO! Hoja 'Telefonos' para autorización no encontrada. El bot no responderá a nadie.")
+                self.phone_sheet_obj = None # Important for the check later
+
+                logger.info("Conexión con Google Sheets establecida/verificada.")
+        except gspread.exceptions.SpreadsheetNotFound:
+            logger.error(f"Error CRÍTICO: No se encontró el Google Sheet llamado 'n8n sheet'. Verifica el nombre.")
+            raise
+        except Exception as e:
+            logger.error(f"Error CRÍTICO al conectar con Google Sheets: {e}")
+            raise
         
     def get_sheet(self):
         return self.spreadsheet
@@ -242,6 +257,65 @@ class SheetsConnection:
         except Exception as e:
             logger.error(f"Error al obtener eventos: {e}")
             return []
+    
+    # --- NUEVO: Método para obtener y cachear números autorizados ---
+    def get_authorized_phones(self):
+        """
+        Obtiene la lista de números de teléfono autorizados desde la hoja 'Telefonos'.
+        Utiliza un caché simple para reducir las llamadas a la API.
+
+        Returns:
+            set: Un conjunto de números de teléfono normalizados (solo dígitos).
+                 Devuelve un conjunto vacío si la hoja no existe o hay un error.
+        """
+        now = time.time()
+        # Check cache first
+        if self._phone_cache is not None and now - self._phone_cache_last_refresh < self._phone_cache_interval:
+            # logger.debug("Usando caché de números de teléfono autorizados.")
+            return self._phone_cache
+
+        logger.info("Refrescando caché de números de teléfono autorizados desde Google Sheets...")
+        authorized_phones_set = set()
+        try:
+            # Re-fetch the sheet object in case the connection was refreshed
+            phone_sheet = self.spreadsheet.worksheet("Telefonos")
+
+            if phone_sheet:
+                # Asume que los números están en la primera columna (A)
+                # Cambia el índice (1) si están en otra columna
+                # Skips the first row (header) using [1:]
+                phone_list_raw = phone_sheet.col_values(1)[1:]
+
+                for phone in phone_list_raw:
+                    if phone: # Ignorar celdas vacías
+                        # Normalizar: quitar '+' y espacios, luego quedarse solo con dígitos
+                        normalized_phone = re.sub(r'\D', '', str(phone))
+                        if normalized_phone: # Asegurarse que no quede vacío después de normalizar
+                            authorized_phones_set.add(normalized_phone)
+
+                logger.info(f"Cargados {len(authorized_phones_set)} números autorizados.")
+                self._phone_cache = authorized_phones_set
+                self._phone_cache_last_refresh = now
+                return self._phone_cache
+            else:
+                logger.error("La hoja 'Telefonos' no se pudo obtener durante la carga de números.")
+                self._phone_cache = set() # Empty set if sheet is gone
+                self._phone_cache_last_refresh = now
+                return self._phone_cache
+
+        except gspread.exceptions.WorksheetNotFound:
+             logger.error("Hoja 'Telefonos' no encontrada al intentar leer números. Nadie estará autorizado.")
+             self._phone_cache = set() # Cache empty set
+             self._phone_cache_last_refresh = now
+             return self._phone_cache
+        except gspread.exceptions.APIError as e:
+             logger.error(f"Error de API al leer la hoja 'Telefonos': {e}")
+             # Return potentially stale cache or empty set
+             return self._phone_cache if self._phone_cache is not None else set()
+        except Exception as e:
+            logger.error(f"Error inesperado al obtener números autorizados: {e}")
+            # Return potentially stale cache or empty set
+            return self._phone_cache if self._phone_cache is not None else set()
 
 
 
@@ -1204,8 +1278,26 @@ def whatsapp_reply():
             logger.error("Payload inválido: falta 'Body' o 'From'")
             return jsonify({"status": "error", "message": "Invalid payload"}), 400
 
-        # Normalizar número para usar como clave consistente en el diccionario de estados
-        sender_phone_normalized = sender_phone_raw.replace('whatsapp:', '').strip()
+        # --- INICIO: FILTRO POR NÚMERO AUTORIZADO ---
+        # Normalizar número del remitente (quitar 'whatsapp:', '+', espacios, etc.)
+        sender_phone_normalized = re.sub(r'\D', '', sender_phone_raw)
+
+        # Conectar a Google Sheets (necesario para obtener la lista autorizada)
+        sheet_conn = SheetsConnection()
+        authorized_phones = sheet_conn.get_authorized_phones()
+
+        if not authorized_phones:
+             logger.critical("No hay números autorizados cargados (puede ser error de hoja 'Telefonos' o está vacía). Bloqueando todas las solicitudes.")
+             # No responder nada, solo registrar
+             return jsonify({"status": "ignored", "message": "Authorization list unavailable"}), 200
+
+
+        if sender_phone_normalized not in authorized_phones:
+            logger.warning(f"Mensaje recibido de número NO AUTORIZADO: {sender_phone_raw} (Normalizado: {sender_phone_normalized}). Ignorando.")
+            # Devolver 200 OK a Twilio para que no reintente, pero no enviar mensaje.
+            return jsonify({"status": "ignored", "message": "Unauthorized number"}), 200
+        else:
+            logger.info(f"Mensaje recibido de número AUTORIZADO: {sender_phone_raw} (Normalizado: {sender_phone_normalized})")
 
         # Obtener estado actual del usuario
         user_status = user_states.get(sender_phone_normalized, {'state': STATE_INITIAL, 'event': None})
@@ -1306,34 +1398,32 @@ def whatsapp_reply():
              data_lines = parsed['data'] # Lista de líneas no vacías
              categories = parsed['categories'] # Diccionario con categorías detectadas (Hombres, Mujeres)
 
-             if command_type in ['add_guests', 'add_guests_split']:
-                 # Intentar agregar a la hoja
-                 # PASO 5.1: Añadir a la hoja (usando la función modificada)
-                 added_count = add_guests_to_sheet(
-                     guest_sheet,
-                     data_lines,
-                     sender_phone_normalized, # Guardar el número normalizado sin prefijo
-                     selected_event,
-                     categories,
-                     command_type
-                 )
+             if command_type in ['add_guests', 'add_guests_split'] and data_lines: # Asegúrate que haya datos
+                added_count = add_guests_to_sheet(
+                    guest_sheet,
+                    data_lines, # <- Pasar la variable
+                    sender_phone_normalized,
+                    selected_event,
+                    categories, # <- Pasar la variable
+                    command_type # <- Pasar la variable
+            )
 
                  # PASO 5.2: Responder confirmación o error
-                 if added_count > 0:
+                if added_count > 0:
                      response_text = f"✅ ¡Listo! Se anotaron *{added_count}* invitados correctamente para el evento *{selected_event}*."
                      # Volver al estado inicial después de éxito
                      user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None}
-                 elif added_count == 0:
+                elif added_count == 0:
                      # Podría ser que el formato era inválido y no se extrajo nada, o un error de sheet.
                      response_text = f"⚠️ No pude anotar invitados. Revisa el formato:\n\n*Hombres:*\nNombre\n...\nEmail\n...\n\n*Mujeres:*\nNombre\n...\nEmail\n...\n\nAsegúrate que la cantidad de nombres y emails coincida en cada sección."
                      # Mantenemos estado para que reintente
                      user_states[sender_phone_normalized] = {'state': STATE_AWAITING_GUEST_DATA, 'event': selected_event}
-                 elif added_count == -1:
+                elif added_count == -1:
                      # Error específico de validación (ej. email faltante)
                      response_text = f"⚠️ Detecté un problema. Parece que faltan emails o algunos no son válidos. Revisa la lista y asegúrate que cada nombre tenga un email asociado y válido.\n\nIntenta enviarla de nuevo con el formato correcto."
                      # Mantenemos estado para que reintente
                      user_states[sender_phone_normalized] = {'state': STATE_AWAITING_GUEST_DATA, 'event': selected_event}
-                 else: # Otro error < -1 (no definido actualmente) o error genérico (si add_guests retorna < -1)
+                else: # Otro error < -1 (no definido actualmente) o error genérico (si add_guests retorna < -1)
                      response_text = "❌ Hubo un error al guardar los invitados. Por favor, inténtalo de nuevo más tarde."
                      # Volver al estado inicial en error desconocido grave
                      user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None}
