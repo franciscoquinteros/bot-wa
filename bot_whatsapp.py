@@ -73,16 +73,72 @@ def send_twilio_message(phone_number, message):
         logger.error(f"Error al enviar mensaje de Twilio a {destination_number}: {e}")
         return False
 
+def infer_gender_llm(first_name):
+    """
+    Usa OpenAI (LLM) para inferir el género de un primer nombre.
+
+    Args:
+        first_name (str): El primer nombre a analizar.
+
+    Returns:
+        str: "Hombre", "Mujer", o "Desconocido".
+    """
+    if not first_name or not isinstance(first_name, str):
+        return "Desconocido"
+
+    # Verificar si el cliente OpenAI está disponible
+    if not OPENAI_AVAILABLE or client is None:
+        logger.warning("OpenAI no disponible para inferir género. Devolviendo 'Desconocido'.")
+        return "Desconocido"
+
+    try:
+        logger.debug(f"Consultando OpenAI para género de: {first_name}")
+        system_prompt = "Eres un asistente experto en nombres hispanohablantes, especialmente de Argentina. Tu tarea es determinar el género más probable (Hombre o Mujer) asociado a un nombre de pila. Responde únicamente con una de estas tres palabras: Hombre, Mujer, Desconocido."
+        user_prompt = f"Nombre de pila: {first_name}"
+
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo", # Puedes probar con "gpt-4o" o "gpt-4" si necesitas más precisión
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0, # Queremos la respuesta más probable
+            max_tokens=5 # La respuesta es muy corta
+        )
+
+        result_text = response.choices[0].message.content.strip().capitalize()
+        logger.debug(f"Respuesta de OpenAI para género de '{first_name}': {result_text}")
+
+        # Validar la respuesta
+        if result_text in ["Hombre", "Mujer"]:
+            return result_text
+        else:
+            # Si responde algo inesperado, lo marcamos como desconocido
+            logger.warning(f"Respuesta inesperada de OpenAI para género de '{first_name}': {result_text}")
+            return "Desconocido"
+
+    except Exception as e:
+        logger.error(f"Error al llamar a OpenAI para inferir género de '{first_name}': {e}")
+        return "Desconocido"
+
 
 def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
     """
-    Agrega invitados VIP (nombre y email) a la hoja 'Invitados VIP'.
-    Espera una lista de diccionarios [{'nombre': n, 'email': e}, ...].
+    Agrega invitados VIP (nombre, email, género) a la hoja 'Invitados VIP'.
+    Infiere género si no se proporcionó. Columna de género se llama "Ingreso".
+
+    Args:
+        sheet: Objeto de hoja de Google Sheets ('Invitados VIP').
+        vip_guests_list (list): Lista de diccionarios [{'nombre': n, 'email': e, 'genero': g_o_None}, ...].
+        pr_name (str): Nombre del PR que los está añadiendo.
+
+    Returns:
+        int: Número de invitados VIP añadidos. 0 si hay error o no se añadió nada.
+             -1 si hubo datos pero se filtraron todos por inválidos.
     """
     if not sheet:
         logger.error("Intento de añadir VIPs pero la hoja 'Invitados VIP' no es válida.")
         return 0
-    # AHORA vip_guests_list debe ser una lista de dicts o None (manejado antes)
     if not vip_guests_list:
         logger.warning("Se llamó a add_vip_guests_to_sheet con lista vacía o inválida.")
         return 0
@@ -93,9 +149,8 @@ def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
 
     try:
         logger.info(f"DEBUG Add VIP: Recibido tipo={type(vip_guests_list)}, contenido={vip_guests_list}") # DEBUG
-        # --- Verificar/Crear encabezados (Nombre | Email | PR) ---
-        expected_headers = ['Nombre', 'Email', 'PR']
-        # ... (código de headers sin cambios)...
+        # --- Verificar/Crear encabezados (Nombre | Email | Ingreso | PR) ---
+        expected_headers = ['Nombre', 'Email', 'Ingreso', 'PR'] # <-- NUEVOS HEADERS
         try:
             headers = sheet.row_values(1)
         except gspread.exceptions.APIError as api_err:
@@ -103,30 +158,52 @@ def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
              else: raise api_err
         if not headers or headers[:len(expected_headers)] != expected_headers:
              logger.info(f"Actualizando/Creando encabezados en 'Invitados VIP': {expected_headers}")
+             # Actualizar rango A1:D1 para 4 columnas
              sheet.update(f'A1:{gspread.utils.rowcol_to_a1(1, len(expected_headers))}', [expected_headers])
 
         # --- Crear las filas ---
-        for guest_data in vip_guests_list: # guest_data DEBE ser un dict aquí
+        for guest_data in vip_guests_list:
             logger.info(f"DEBUG Add VIP Loop: Iterando, tipo={type(guest_data)}, item={guest_data}") # DEBUG
-            # Usar .get() porque guest_data ES un diccionario
-            name = guest_data.get('nombre', '').strip() # <-- Aquí fallaba si guest_data era str
+            name = guest_data.get('nombre', '').strip()
             email = guest_data.get('email', '').strip()
+            parsed_gender = guest_data.get('genero') # Será 'Hombre', 'Mujer' o None
 
-            if name and email:
-                rows_to_add.append([name, email, pr_name])
+            if name and email: # Validar nombre y email
+                # --- Determinar/Inferir Género ---
+                # --- Determinar/Inferir Género ---
+                final_gender = "Desconocido" # Valor por defecto
+                if parsed_gender: # Si el parser detectó Hombres/Mujeres
+                    final_gender = parsed_gender
+                else:
+                    # Intentar inferir si no vino del encabezado
+                    first_name = name.split()[0] if name else ""
+                    if first_name:
+                         # --- LLAMAR A LA FUNCIÓN DE IA ---
+                         inferred = infer_gender_llm(first_name) # <<-- ¡CAMBIO AQUÍ!
+                         final_gender = inferred # Será Hombre, Mujer, o Desconocido
+                         logger.debug(f"Género inferido por IA para '{first_name}': {final_gender} (Parseado: {parsed_gender})")
+                         # Pequeña pausa opcional para no saturar API si son muchos nombres seguidos
+                         # time.sleep(0.1)
+                    else:
+                         logger.warning(f"No se pudo inferir género para nombre vacío.")
+                         final_gender = "Desconocido" # Asegurar default si el nombre estaba vacío
+
+                # Añadir fila con Nombre, Email, Género (Ingreso), PR
+                rows_to_add.append([name, email, final_gender, pr_name]) # <-- NUEVO FORMATO FILA
                 added_count += 1
             else:
                 logger.warning(f"Se omitió invitado VIP (nombre='{name}', email='{email}') por datos faltantes. PR: {pr_name}.")
 
-        # ... (resto de la función sin cambios: append_rows, return, except) ...
+        # --- Agregar a la hoja ---
         if rows_to_add:
             sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
-            logger.info(f"Agregados {added_count} invitados VIP (con email) por PR '{pr_name}'.")
-            return added_count if added_count == original_count else -1
+            logger.info(f"Agregados {added_count} invitados VIP (con género) por PR '{pr_name}'.")
+            return added_count if added_count == original_count else -1 # Indica si algunos fallaron la validación interna
         else:
             logger.warning(f"No se generaron filas VIP válidas para añadir por {pr_name}.")
             return -1 if original_count > 0 else 0
 
+    # ... (Manejo de excepciones como antes) ...
     except gspread.exceptions.APIError as e:
         logger.error(f"Error API Google Sheets al agregar filas VIP: {e}")
         return 0
@@ -1372,67 +1449,74 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
 # Asegúrate que esta es la ÚNICA definición de parse_vip_guest_list
 def parse_vip_guest_list(message_body):
     """
-    Parsea un mensaje esperado en formato VIP (bloque de nombres, bloque de emails).
-    Devuelve lista de diccionarios [{'nombre': n, 'email': e}] o None si falla.
+    Parsea formato VIP (Nombres->Emails) detectando encabezados opcionales
+    'Hombres:'/'Mujeres:'. Devuelve lista de dicts
+    [{'nombre': n, 'email': e, 'genero': g}] o None.
+    'genero' será "Hombre", "Mujer", o None si no había encabezado.
     """
     lines = [line.strip() for line in message_body.split('\n') if line.strip()]
     if not lines:
-        logger.warning("parse_vip_guest_list: Mensaje vacío o solo espacios.")
-        return None # No hay contenido
+        logger.warning("parse_vip_guest_list: Mensaje vacío.")
+        return None
 
-    names = []
+    names_data = [] # Guardará {'nombre': n, 'genero': g}
     emails = []
-    parsing_names = True # Empezamos buscando nombres
+    parsing_names = True
+    current_gender = None # Género actual detectado por encabezado
 
     for line in lines:
-        # Detección simple de email (podría mejorarse si es necesario)
-        # Asegura que haya algo antes del @ y un punto después del @
-        is_email = '@' in line and '.' in line.split('@')[-1] and len(line.split('@')[0]) > 0
+        line_lower = line.lower()
 
+        # Detectar encabezados de Género
+        if line_lower.startswith('hombres'):
+            current_gender = "Hombre"
+            logger.debug("parse_vip_guest_list: Detectado encabezado 'Hombres'.")
+            continue # Saltar la línea del encabezado
+        elif line_lower.startswith('mujeres'):
+            current_gender = "Mujer"
+            logger.debug("parse_vip_guest_list: Detectado encabezado 'Mujeres'.")
+            continue # Saltar la línea del encabezado
+
+        # Detectar Emails
+        is_email = '@' in line and '.' in line.split('@')[-1] and len(line.split('@')[0]) > 0
         if is_email:
-            # Si encontramos un email, significa que terminaron los nombres
             parsing_names = False
-            # Validar un poco más el email si es necesario con regex
             if re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", line):
                  emails.append(line)
             else:
                  logger.warning(f"parse_vip_guest_list: Línea '{line}' parece email pero no valida regex.")
-                 # Decidimos ignorar emails que no validen regex estricto por ahora
-                 # emails.append(line) # Descomentar si quieres ser menos estricto
-
+                 # Ignorar email inválido
         elif parsing_names:
-            # Solo añadir si todavía estamos buscando nombres
-            # Permitir nombres con espacios, apóstrofes, etc.
+            # Añadir nombre CON el género detectado HASTA ESE MOMENTO
             if re.match(r"^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s'.]+$", line) and len(line) > 1:
-                 names.append(line)
+                 names_data.append({'nombre': line, 'genero': current_gender}) # Guarda dict nombre+genero
+                 # logger.debug(f"parse_vip_guest_list: Nombre añadido: '{line}', Genero: {current_gender}")
             else:
-                 logger.warning(f"parse_vip_guest_list: Línea '{line}' ignorada (modo nombre) - no parece nombre válido.")
-        # else: # Si parsing_names es False y no es email, ignorar la línea
-             # logger.debug(f"parse_vip_guest_list: Línea '{line}' ignorada (modo email)")
+                 logger.warning(f"parse_vip_guest_list: Línea '{line}' ignorada (modo nombre).")
+        # else: Ignorar líneas que no son email si ya estamos en modo email
 
-    logger.info(f"Parseo VIP: {len(names)} nombres encontrados, {len(emails)} emails encontrados.")
+    logger.info(f"Parseo VIP: {len(names_data)} nombres encontrados, {len(emails)} emails encontrados.")
 
     # Validar cantidades
-    if not names or not emails: # Comprueba si alguna lista está vacía
-        logger.error(f"Error en formato VIP: Faltan nombres ({len(names)}) o emails ({len(emails)}).")
-        return None # Devuelve None
-    if len(names) != len(emails): # Comprueba si las cantidades no coinciden
-        logger.error(f"Error en formato VIP: Desbalance - {len(names)} nombres vs {len(emails)} emails.")
-        return None # Devuelve None
+    if not names_data or not emails or len(names_data) != len(emails):
+        logger.error(f"Error formato VIP: Faltan/Desbalance - N:{len(names_data)} E:{len(emails)}.")
+        return None
 
-    # Emparejar y crear la lista de diccionarios
+    # Emparejar Nombres (con su género) y Emails
     paired_guests = []
-    for i in range(len(names)):
-        name_clean = names[i].strip()
+    for i in range(len(names_data)):
+        name_info = names_data[i] # Esto es {'nombre': n, 'genero': g}
         email_clean = emails[i].strip()
-        # Solo añadir si ambos tienen contenido después de limpiar
-        if name_clean and email_clean:
-             paired_guests.append({'nombre': name_clean, 'email': email_clean})
+        if name_info.get('nombre') and email_clean:
+             paired_guests.append({
+                 'nombre': name_info['nombre'].strip(),
+                 'email': email_clean,
+                 'genero': name_info['genero'] # Puede ser 'Hombre', 'Mujer' o None
+             })
 
-    if len(paired_guests) != len(names):
-         logger.warning("Algunos pares nombre/email VIP fueron omitidos por datos vacíos después del strip.")
+    if len(paired_guests) != len(names_data):
+         logger.warning("Algunos pares nombre/email VIP fueron omitidos por datos vacíos.")
 
-    # Devolver la lista de diccionarios solo si se creó al menos un par válido
     return paired_guests if paired_guests else None
     
 # MODIFICADO: Añadir sheet_conn, buscar PR name y filtrar por él.
@@ -1868,33 +1952,39 @@ def whatsapp_reply():
                 logger.info(f"Usuario VIP {sender_phone_normalized} eligió añadir tipo VIP.")
                 user_status['state'] = STATE_AWAITING_GUEST_DATA
                 user_status['guest_type'] = 'VIP'
-                # --- INSTRUCCIONES VIP ACTUALIZADAS (FORMATO NOMBRES -> EMAILS) ---
+                # --- INSTRUCCIONES VIP ACTUALIZADAS ---
                 response_text = (
-                    "Ok, modo VIP activado. Envíame la lista en este formato:\n\n"
+                    "Ok, modo VIP. Envíame la lista usando encabezados *opcionales* Hombres:/Mujeres: y el formato Nombres -> Emails:\n\n"
+                    "*Hombres:* (Opcional)\n"
                     "Nombre Apellido VIP 1\n"
-                    "Nombre Apellido VIP 2\n"
-                    "...\n\n" # Separador (línea vacía)
+                    "...\n\n" # Separador
                     "email.vip1@ejemplo.com\n"
-                    "email.vip2@ejemplo.com\n"
                     "...\n\n"
-                    "⚠️ *Importante*: Primero todos los nombres, luego todos los emails. La cantidad debe coincidir.\n"
-                    "(Escribe 'cancelar' para volver a elegir evento)."
+                    "*Mujeres:* (Opcional)\n"
+                    "Nombre Apellido VIP Fem 1\n"
+                    "...\n\n" # Separador
+                    "email.vipfem1@ejemplo.com\n"
+                    "...\n\n"
+                    "⚠️ *Importante*: Cantidad de nombres y emails debe coincidir. Si no pones Hombres/Mujeres, intentaré adivinar.\n"
+                    "(Escribe 'cancelar' para volver)."
                  )
-                user_states[sender_phone_normalized] = user_status # Guardar estado actualizado
+                user_states[sender_phone_normalized] = user_status
+            # ... (resto del elif para 'normal' sin cambios) ...
             elif choice_lower == 'normal' or choice_lower == 'normales':
+                 # ... (instrucciones normales) ...
                  logger.info(f"Usuario VIP {sender_phone_normalized} eligió añadir tipo Normal.")
                  user_status['state'] = STATE_AWAITING_GUEST_DATA
                  user_status['guest_type'] = 'Normal'
-                 response_text = ( # Instrucciones formato normal
+                 response_text = ( # Instrucciones para formato normal
                     f"Ok, modo Normal. Envíame la lista (Nombres->Emails):\n\n"
                     "*Hombres:* (Opcional)\nNombre Apellido\n...\n"
                     "email1@ejemplo.com\n...\n\n"
                     "⚠️ *Importante*: La cantidad debe coincidir.\n"
                     "Escribe 'cancelar' para cambiar."
                  )
-                 user_states[sender_phone_normalized] = user_status # Guardar estado actualizado
+                 user_states[sender_phone_normalized] = user_status
             else:
-                response_text = f"No entendí '{incoming_msg}'. Por favor, responde 'Normal' o 'VIP'."
+                 response_text = f"No entendí '{incoming_msg}'. Por favor, responde 'Normal' o 'VIP'."
                 # Mantener estado actual
 
 
