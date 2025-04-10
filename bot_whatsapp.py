@@ -77,71 +77,63 @@ def send_twilio_message(phone_number, message):
 def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
     """
     Agrega invitados VIP (nombre y email) a la hoja 'Invitados VIP'.
-
-    Args:
-        sheet: Objeto de hoja de Google Sheets ('Invitados VIP').
-        vip_guests_list (list): Lista de diccionarios [{'nombre': n, 'email': e}, ...].
-        pr_name (str): Nombre del PR que los está añadiendo.
-
-    Returns:
-        int: Número de invitados VIP añadidos. 0 si hay error o no se añadió nada.
-             -1 si hubo datos pero se filtraron todos por inválidos.
+    Espera una lista de diccionarios [{'nombre': n, 'email': e}, ...].
     """
     if not sheet:
         logger.error("Intento de añadir VIPs pero la hoja 'Invitados VIP' no es válida.")
         return 0
-    if not vip_guests_list: # Recibe la lista de diccionarios
-        logger.warning("Se llamó a add_vip_guests_to_sheet con lista vacía.")
+    # AHORA vip_guests_list debe ser una lista de dicts o None (manejado antes)
+    if not vip_guests_list:
+        logger.warning("Se llamó a add_vip_guests_to_sheet con lista vacía o inválida.")
         return 0
 
     rows_to_add = []
     added_count = 0
-    original_count = len(vip_guests_list) # Contar cuántos llegaron
+    original_count = len(vip_guests_list)
 
     try:
+        logger.info(f"DEBUG Add VIP: Recibido tipo={type(vip_guests_list)}, contenido={vip_guests_list}") # DEBUG
         # --- Verificar/Crear encabezados (Nombre | Email | PR) ---
         expected_headers = ['Nombre', 'Email', 'PR']
+        # ... (código de headers sin cambios)...
         try:
             headers = sheet.row_values(1)
         except gspread.exceptions.APIError as api_err:
              if "exceeds grid limits" in str(api_err): headers = []
              else: raise api_err
         if not headers or headers[:len(expected_headers)] != expected_headers:
-             logger.info(f"Actualizando/Creando encabezados en hoja 'Invitados VIP': {expected_headers}")
+             logger.info(f"Actualizando/Creando encabezados en 'Invitados VIP': {expected_headers}")
              sheet.update(f'A1:{gspread.utils.rowcol_to_a1(1, len(expected_headers))}', [expected_headers])
 
         # --- Crear las filas ---
-        # Iterar sobre la lista de diccionarios
-        for guest_data in vip_guests_list:
+        for guest_data in vip_guests_list: # guest_data DEBE ser un dict aquí
+            logger.info(f"DEBUG Add VIP Loop: Iterando, tipo={type(guest_data)}, item={guest_data}") # DEBUG
             # Usar .get() porque guest_data ES un diccionario
-            name = guest_data.get('nombre', '').strip()
+            name = guest_data.get('nombre', '').strip() # <-- Aquí fallaba si guest_data era str
             email = guest_data.get('email', '').strip()
 
-            if name and email: # Validar que ambos existan
+            if name and email:
                 rows_to_add.append([name, email, pr_name])
                 added_count += 1
             else:
-                logger.warning(f"Se omitió invitado VIP (nombre='{name}', email='{email}') por datos faltantes. Añadido por {pr_name}.")
+                logger.warning(f"Se omitió invitado VIP (nombre='{name}', email='{email}') por datos faltantes. PR: {pr_name}.")
 
-        # --- Agregar a la hoja ---
+        # ... (resto de la función sin cambios: append_rows, return, except) ...
         if rows_to_add:
             sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
             logger.info(f"Agregados {added_count} invitados VIP (con email) por PR '{pr_name}'.")
-            # Si se añadieron menos de los que llegaron, indica que algunos se omitieron
             return added_count if added_count == original_count else -1
         else:
             logger.warning(f"No se generaron filas VIP válidas para añadir por {pr_name}.")
-            # Si la lista original no estaba vacía pero no se añadieron filas, todos eran inválidos
             return -1 if original_count > 0 else 0
 
-    # ... (Resto del manejo de excepciones) ...
     except gspread.exceptions.APIError as e:
-        logger.error(f"Error de API de Google Sheets al agregar filas VIP: {e}")
+        logger.error(f"Error API Google Sheets al agregar filas VIP: {e}")
         return 0
     except Exception as e:
         logger.error(f"Error inesperado en add_vip_guests_to_sheet: {e}")
         import traceback
-        logger.error(traceback.format_exc())
+        logger.error(traceback.format_exc()) # Log completo del error
         return 0
 
 
@@ -1380,72 +1372,48 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
 def parse_vip_guest_list(message_body):
     """
     Parsea un mensaje esperado en formato VIP (bloque de nombres, bloque de emails).
-
-    Args:
-        message_body (str): El cuerpo completo del mensaje del usuario.
-
-    Returns:
-        list: Una lista de diccionarios [{'nombre': n, 'email': e}, ...] si el formato es válido
-              y las cantidades coinciden.
-        None: Si el formato es inválido, las cantidades no coinciden, o no hay datos.
+    Devuelve lista de diccionarios [{'nombre': n, 'email': e}] o None si falla.
     """
     lines = [line.strip() for line in message_body.split('\n') if line.strip()]
     if not lines:
         logger.warning("parse_vip_guest_list: Mensaje vacío o solo espacios.")
-        return None # No hay contenido
+        return None
 
     names = []
     emails = []
-    parsing_names = True # Empezamos buscando nombres
+    parsing_names = True
 
     for line in lines:
-        # Detección simple de email (podría mejorarse si es necesario)
         is_email = '@' in line and '.' in line.split('@')[-1] and len(line.split('@')[0]) > 0
-
         if is_email:
-            # Si encontramos un email, significa que terminaron los nombres
             parsing_names = False
-            # Validar un poco más el email si es necesario con regex
             if re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", line):
                  emails.append(line)
             else:
                  logger.warning(f"parse_vip_guest_list: Línea '{line}' parece email pero no valida regex.")
-                 # Considerar si igual se debe añadir o ignorar
-                 # emails.append(line) # Opcional: añadir aunque no valide regex estricto
-
         elif parsing_names:
-            # Solo añadir si todavía estamos buscando nombres
-            # Permitir nombres con números o caracteres especiales? Ajustar regex si es necesario
+            # Permitir nombres con espacios, apóstrofes, etc.
             if re.match(r"^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s'.]+$", line) and len(line) > 1:
                  names.append(line)
             else:
-                 logger.warning(f"parse_vip_guest_list: Línea '{line}' ignorada (modo nombre) - no parece nombre válido.")
-        # else: # Si parsing_names es False y no es email, ignorar la línea
-             # logger.debug(f"parse_vip_guest_list: Línea '{line}' ignorada (modo email)")
+                 logger.warning(f"parse_vip_guest_list: Línea '{line}' ignorada (modo nombre).")
 
     logger.info(f"Parseo VIP: {len(names)} nombres encontrados, {len(emails)} emails encontrados.")
 
-    # Validar cantidades
-    if not names or not emails: # Comprueba si alguna lista está vacía
-        logger.error(f"Error en formato VIP: Faltan nombres ({len(names)}) o emails ({len(emails)}).")
-        return None # Devuelve None
-    if len(names) != len(emails): # Comprueba si las cantidades no coinciden
-        logger.error(f"Error en formato VIP: Desbalance - {len(names)} nombres vs {len(emails)} emails.")
-        return None # Devuelve None
+    if not names or not emails or len(names) != len(emails):
+        logger.error(f"Error formato VIP: Faltan/Desbalance - N:{len(names)} E:{len(emails)}.")
+        return None
 
-    # Emparejar y crear la lista de diccionarios
     paired_guests = []
     for i in range(len(names)):
         name_clean = names[i].strip()
         email_clean = emails[i].strip()
-        # Solo añadir si ambos tienen contenido después de limpiar
         if name_clean and email_clean:
              paired_guests.append({'nombre': name_clean, 'email': email_clean})
 
     if len(paired_guests) != len(names):
-         logger.warning("Algunos pares nombre/email VIP fueron omitidos por datos vacíos después del strip.")
+         logger.warning("Algunos pares nombre/email VIP fueron omitidos por datos vacíos.")
 
-    # Devolver la lista de diccionarios solo si se creó al menos un par válido
     return paired_guests if paired_guests else None
     
 # MODIFICADO: Añadir sheet_conn, buscar PR name y filtrar por él.
@@ -1943,6 +1911,9 @@ def whatsapp_reply():
                                  if pr_name_found: vip_pr_name = pr_name_found
                                  else: logger.warning(f"No se encontró PR Name VIP para {sender_phone_normalized} en hoja VIP.")
                              except Exception as vip_map_err: logger.error(f"Error buscando nombre PR VIP: {vip_map_err}")
+                             logger.info(f"DEBUG WHATSAPP_REPLY: Llamando a add_vip_guests_to_sheet con:")
+                             logger.info(f"DEBUG WHATSAPP_REPLY:   vip_guest_sheet tipo: {type(vip_guest_sheet)}")
+                             logger.info(f"DEBUG WHATSAPP_REPLY:   vip_pr_name: {vip_pr_name}")
 
                              added_count = add_vip_guests_to_sheet(vip_guest_sheet, guest_names, vip_pr_name)
 
