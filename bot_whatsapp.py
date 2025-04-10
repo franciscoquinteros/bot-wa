@@ -85,40 +85,40 @@ def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
 
     Returns:
         int: Número de invitados VIP añadidos. 0 si hay error o no se añadió nada.
-             -1 si hubo error de validación en la entrada (aunque parse_vip_guest_list ya debería filtrar).
+             -1 si hubo datos pero se filtraron todos por inválidos.
     """
     if not sheet:
         logger.error("Intento de añadir VIPs pero la hoja 'Invitados VIP' no es válida.")
         return 0
-    if not vip_guests_list:
+    if not vip_guests_list: # Recibe la lista de diccionarios
         logger.warning("Se llamó a add_vip_guests_to_sheet con lista vacía.")
         return 0
 
     rows_to_add = []
     added_count = 0
+    original_count = len(vip_guests_list) # Contar cuántos llegaron
+
     try:
         # --- Verificar/Crear encabezados (Nombre | Email | PR) ---
-        expected_headers = ['Nombre', 'Email', 'PR'] # <-- NUEVOS HEADERS
+        expected_headers = ['Nombre', 'Email', 'PR']
         try:
             headers = sheet.row_values(1)
         except gspread.exceptions.APIError as api_err:
-             if "exceeds grid limits" in str(api_err): headers = [] # Hoja vacía
+             if "exceeds grid limits" in str(api_err): headers = []
              else: raise api_err
-        # Comprobar si los encabezados existentes coinciden con los esperados
         if not headers or headers[:len(expected_headers)] != expected_headers:
              logger.info(f"Actualizando/Creando encabezados en hoja 'Invitados VIP': {expected_headers}")
-             # Actualizar el rango correcto A1:C1 para 3 columnas
              sheet.update(f'A1:{gspread.utils.rowcol_to_a1(1, len(expected_headers))}', [expected_headers])
 
         # --- Crear las filas ---
+        # Iterar sobre la lista de diccionarios
         for guest_data in vip_guests_list:
+            # Usar .get() porque guest_data ES un diccionario
             name = guest_data.get('nombre', '').strip()
             email = guest_data.get('email', '').strip()
 
-            # Validar que tengamos nombre y email antes de añadir
-            if name and email:
-                # Añadir fila con Nombre, Email, PR
-                rows_to_add.append([name, email, pr_name]) # <-- NUEVO FORMATO DE FILA
+            if name and email: # Validar que ambos existan
+                rows_to_add.append([name, email, pr_name])
                 added_count += 1
             else:
                 logger.warning(f"Se omitió invitado VIP (nombre='{name}', email='{email}') por datos faltantes. Añadido por {pr_name}.")
@@ -127,12 +127,14 @@ def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
         if rows_to_add:
             sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
             logger.info(f"Agregados {added_count} invitados VIP (con email) por PR '{pr_name}'.")
-            return added_count
+            # Si se añadieron menos de los que llegaron, indica que algunos se omitieron
+            return added_count if added_count == original_count else -1
         else:
             logger.warning(f"No se generaron filas VIP válidas para añadir por {pr_name}.")
-            # Si vip_guests_list no estaba vacía pero rows_to_add sí, significa que todos tenían datos faltantes
-            return 0 if not vip_guests_list else -1 # Devolver -1 si hubo datos pero se filtraron todos
+            # Si la lista original no estaba vacía pero no se añadieron filas, todos eran inválidos
+            return -1 if original_count > 0 else 0
 
+    # ... (Resto del manejo de excepciones) ...
     except gspread.exceptions.APIError as e:
         logger.error(f"Error de API de Google Sheets al agregar filas VIP: {e}")
         return 0
@@ -1389,6 +1391,7 @@ def parse_vip_guest_list(message_body):
     """
     lines = [line.strip() for line in message_body.split('\n') if line.strip()]
     if not lines:
+        logger.warning("parse_vip_guest_list: Mensaje vacío o solo espacios.")
         return None # No hay contenido
 
     names = []
@@ -1396,37 +1399,54 @@ def parse_vip_guest_list(message_body):
     parsing_names = True # Empezamos buscando nombres
 
     for line in lines:
-        is_email = '@' in line and '.' in line.split('@')[-1] # Detección simple de email
+        # Detección simple de email (podría mejorarse si es necesario)
+        is_email = '@' in line and '.' in line.split('@')[-1] and len(line.split('@')[0]) > 0
 
         if is_email:
-            parsing_names = False # Encontramos el primer email, cambiamos de modo
-            emails.append(line)
+            # Si encontramos un email, significa que terminaron los nombres
+            parsing_names = False
+            # Validar un poco más el email si es necesario con regex
+            if re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", line):
+                 emails.append(line)
+            else:
+                 logger.warning(f"parse_vip_guest_list: Línea '{line}' parece email pero no valida regex.")
+                 # Considerar si igual se debe añadir o ignorar
+                 # emails.append(line) # Opcional: añadir aunque no valide regex estricto
+
         elif parsing_names:
             # Solo añadir si todavía estamos buscando nombres
-            # Podríamos añadir validación de nombre aquí si quisiéramos
-            if re.match(r"^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s']+$", line) and len(line) > 1:
+            # Permitir nombres con números o caracteres especiales? Ajustar regex si es necesario
+            if re.match(r"^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s'.]+$", line) and len(line) > 1:
                  names.append(line)
             else:
-                 logger.warning(f"Línea '{line}' ignorada durante parseo VIP (modo nombre) - no parece nombre válido.")
-                 # Ignorar líneas inválidas en bloque de nombres
-        else:
-             # Estamos en modo email pero la línea no es un email válido
-             logger.warning(f"Línea '{line}' ignorada durante parseo VIP (modo email) - no es email válido.")
-             # Ignorar líneas inválidas en bloque de emails
+                 logger.warning(f"parse_vip_guest_list: Línea '{line}' ignorada (modo nombre) - no parece nombre válido.")
+        # else: # Si parsing_names es False y no es email, ignorar la línea
+             # logger.debug(f"parse_vip_guest_list: Línea '{line}' ignorada (modo email)")
 
     logger.info(f"Parseo VIP: {len(names)} nombres encontrados, {len(emails)} emails encontrados.")
 
     # Validar cantidades
-    if not names or not emails or len(names) != len(emails):
+    if not names or not emails: # Comprueba si alguna lista está vacía
+        logger.error(f"Error en formato VIP: Faltan nombres ({len(names)}) o emails ({len(emails)}).")
+        return None # Devuelve None
+    if len(names) != len(emails): # Comprueba si las cantidades no coinciden
         logger.error(f"Error en formato VIP: Desbalance - {len(names)} nombres vs {len(emails)} emails.")
-        return None # Retorna None si las cantidades no coinciden o alguna lista está vacía
+        return None # Devuelve None
 
     # Emparejar y crear la lista de diccionarios
     paired_guests = []
     for i in range(len(names)):
-        paired_guests.append({'nombre': names[i], 'email': emails[i]})
+        name_clean = names[i].strip()
+        email_clean = emails[i].strip()
+        # Solo añadir si ambos tienen contenido después de limpiar
+        if name_clean and email_clean:
+             paired_guests.append({'nombre': name_clean, 'email': email_clean})
 
-    return paired_guests
+    if len(paired_guests) != len(names):
+         logger.warning("Algunos pares nombre/email VIP fueron omitidos por datos vacíos después del strip.")
+
+    # Devolver la lista de diccionarios solo si se creó al menos un par válido
+    return paired_guests if paired_guests else None
     
 # MODIFICADO: Añadir sheet_conn, buscar PR name y filtrar por él.
 def get_guests_by_pr(sheet, sheet_conn, phone_number):
@@ -1861,20 +1881,31 @@ def whatsapp_reply():
                 logger.info(f"Usuario VIP {sender_phone_normalized} eligió añadir tipo VIP.")
                 user_status['state'] = STATE_AWAITING_GUEST_DATA
                 user_status['guest_type'] = 'VIP'
-                response_text = "Ok, modo VIP. Envíame la lista de *nombres* VIP, uno por línea.\n\n(Escribe 'cancelar' para volver a elegir evento)."
+                # --- INSTRUCCIONES VIP ACTUALIZADAS (FORMATO NOMBRES -> EMAILS) ---
+                response_text = (
+                    "Ok, modo VIP activado. Envíame la lista en este formato:\n\n"
+                    "Nombre Apellido VIP 1\n"
+                    "Nombre Apellido VIP 2\n"
+                    "...\n\n" # Separador (línea vacía)
+                    "email.vip1@ejemplo.com\n"
+                    "email.vip2@ejemplo.com\n"
+                    "...\n\n"
+                    "⚠️ *Importante*: Primero todos los nombres, luego todos los emails. La cantidad debe coincidir.\n"
+                    "(Escribe 'cancelar' para volver a elegir evento)."
+                 )
                 user_states[sender_phone_normalized] = user_status # Guardar estado actualizado
             elif choice_lower == 'normal' or choice_lower == 'normales':
-                logger.info(f"Usuario VIP {sender_phone_normalized} eligió añadir tipo Normal.")
-                user_status['state'] = STATE_AWAITING_GUEST_DATA
-                user_status['guest_type'] = 'Normal'
-                response_text = ( # Instrucciones para formato normal
-                    f"Ok, modo Normal. Envíame la lista (Nombres primero, luego Emails):\n\n"
+                 logger.info(f"Usuario VIP {sender_phone_normalized} eligió añadir tipo Normal.")
+                 user_status['state'] = STATE_AWAITING_GUEST_DATA
+                 user_status['guest_type'] = 'Normal'
+                 response_text = ( # Instrucciones formato normal
+                    f"Ok, modo Normal. Envíame la lista (Nombres->Emails):\n\n"
                     "*Hombres:* (Opcional)\nNombre Apellido\n...\n"
                     "email1@ejemplo.com\n...\n\n"
-                    # ... (resto de instrucciones) ...
+                    "⚠️ *Importante*: La cantidad debe coincidir.\n"
                     "Escribe 'cancelar' para cambiar."
-                )
-                user_states[sender_phone_normalized] = user_status # Guardar estado actualizado
+                 )
+                 user_states[sender_phone_normalized] = user_status # Guardar estado actualizado
             else:
                 response_text = f"No entendí '{incoming_msg}'. Por favor, responde 'Normal' o 'VIP'."
                 # Mantener estado actual
