@@ -1369,6 +1369,7 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
         return 0 # Indicar fallo genérico
 
     
+# Asegúrate que esta es la ÚNICA definición de parse_vip_guest_list
 def parse_vip_guest_list(message_body):
     """
     Parsea un mensaje esperado en formato VIP (bloque de nombres, bloque de emails).
@@ -1377,43 +1378,61 @@ def parse_vip_guest_list(message_body):
     lines = [line.strip() for line in message_body.split('\n') if line.strip()]
     if not lines:
         logger.warning("parse_vip_guest_list: Mensaje vacío o solo espacios.")
-        return None
+        return None # No hay contenido
 
     names = []
     emails = []
-    parsing_names = True
+    parsing_names = True # Empezamos buscando nombres
 
     for line in lines:
+        # Detección simple de email (podría mejorarse si es necesario)
+        # Asegura que haya algo antes del @ y un punto después del @
         is_email = '@' in line and '.' in line.split('@')[-1] and len(line.split('@')[0]) > 0
+
         if is_email:
+            # Si encontramos un email, significa que terminaron los nombres
             parsing_names = False
+            # Validar un poco más el email si es necesario con regex
             if re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", line):
                  emails.append(line)
             else:
                  logger.warning(f"parse_vip_guest_list: Línea '{line}' parece email pero no valida regex.")
+                 # Decidimos ignorar emails que no validen regex estricto por ahora
+                 # emails.append(line) # Descomentar si quieres ser menos estricto
+
         elif parsing_names:
+            # Solo añadir si todavía estamos buscando nombres
             # Permitir nombres con espacios, apóstrofes, etc.
             if re.match(r"^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s'.]+$", line) and len(line) > 1:
                  names.append(line)
             else:
-                 logger.warning(f"parse_vip_guest_list: Línea '{line}' ignorada (modo nombre).")
+                 logger.warning(f"parse_vip_guest_list: Línea '{line}' ignorada (modo nombre) - no parece nombre válido.")
+        # else: # Si parsing_names es False y no es email, ignorar la línea
+             # logger.debug(f"parse_vip_guest_list: Línea '{line}' ignorada (modo email)")
 
     logger.info(f"Parseo VIP: {len(names)} nombres encontrados, {len(emails)} emails encontrados.")
 
-    if not names or not emails or len(names) != len(emails):
-        logger.error(f"Error formato VIP: Faltan/Desbalance - N:{len(names)} E:{len(emails)}.")
-        return None
+    # Validar cantidades
+    if not names or not emails: # Comprueba si alguna lista está vacía
+        logger.error(f"Error en formato VIP: Faltan nombres ({len(names)}) o emails ({len(emails)}).")
+        return None # Devuelve None
+    if len(names) != len(emails): # Comprueba si las cantidades no coinciden
+        logger.error(f"Error en formato VIP: Desbalance - {len(names)} nombres vs {len(emails)} emails.")
+        return None # Devuelve None
 
+    # Emparejar y crear la lista de diccionarios
     paired_guests = []
     for i in range(len(names)):
         name_clean = names[i].strip()
         email_clean = emails[i].strip()
+        # Solo añadir si ambos tienen contenido después de limpiar
         if name_clean and email_clean:
              paired_guests.append({'nombre': name_clean, 'email': email_clean})
 
     if len(paired_guests) != len(names):
-         logger.warning("Algunos pares nombre/email VIP fueron omitidos por datos vacíos.")
+         logger.warning("Algunos pares nombre/email VIP fueron omitidos por datos vacíos después del strip.")
 
+    # Devolver la lista de diccionarios solo si se creó al menos un par válido
     return paired_guests if paired_guests else None
     
 # MODIFICADO: Añadir sheet_conn, buscar PR name y filtrar por él.
@@ -1889,53 +1908,68 @@ def whatsapp_reply():
                 response_text = "Operación cancelada. Salúdame de nuevo para elegir otro evento."
                 user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None} # Resetear
             else:
-                # --- Decidir qué función de añadir llamar ---
+                # --- Decidir qué lógica de añadido usar ---
                 if selected_guest_type == 'VIP':
-                    logger.info(f"Procesando datos VIP para {sender_phone_normalized}")
+                    logger.info(f"Procesando datos VIP (formato N->E) para {sender_phone_normalized}")
                     if not vip_guest_sheet:
-                         logger.error(f"Intento de añadir VIPs pero la hoja 'Invitados VIP' no está disponible.")
+                         logger.error(f"Hoja 'Invitados VIP' no disponible.")
                          response_text = "❌ Hubo un error interno (hoja VIP no accesible)."
                          user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None} # Resetear
                     else:
-                        # Asumir nombres, uno por línea
-                        guest_names = [name.strip() for name in incoming_msg.split('\n') if name.strip()]
-                        if not guest_names:
-                             response_text = "⚠️ No detecté nombres en tu lista. Envíalos uno por línea."
-                             # Mantener estado para reintento
-                        else:
-                             # Obtener nombre del PR VIP desde la hoja VIP
+                        # --- Parsear Nombres y Emails VIP ---
+                        # Llama a la función que espera formato Nombres->Emails y devuelve lista de dicts o None
+                        parsed_vip_list = parse_vip_guest_list(incoming_msg)
+
+                        if parsed_vip_list is None: # Error de formato o conteo detectado por el parser
+                             response_text = ("⚠️ Formato incorrecto para VIPs. Asegúrate de enviar:\n\n"
+                                              "Nombres (uno por línea)\n[Línea Vacía]\nEmails (uno por línea)\n\n"
+                                              "La cantidad de nombres y emails debe coincidir.")
+                             # Mantener estado para reintento (no resetear user_states)
+                             # user_states[sender_phone_normalized]['state'] = STATE_AWAITING_GUEST_DATA # Ya está en este estado
+                        else: # El parser devolvió una lista de diccionarios válida
+                             # Obtener nombre del PR VIP (desde hoja VIP)
                              vip_pr_name = sender_phone_normalized # Fallback
                              try:
                                  vip_pr_map = sheet_conn.get_vip_phone_pr_mapping() # Usar mapeo VIP
                                  pr_name_found = vip_pr_map.get(sender_phone_normalized)
                                  if pr_name_found: vip_pr_name = pr_name_found
-                                 else: logger.warning(f"No se encontró PR Name VIP para {sender_phone_normalized} en hoja VIP.")
+                                 else: logger.warning(f"No se encontró PR Name VIP para {sender_phone_normalized}")
                              except Exception as vip_map_err: logger.error(f"Error buscando nombre PR VIP: {vip_map_err}")
+
+                             # --- Logging DEBUG ---
                              logger.info(f"DEBUG WHATSAPP_REPLY: Llamando a add_vip_guests_to_sheet con:")
                              logger.info(f"DEBUG WHATSAPP_REPLY:   vip_guest_sheet tipo: {type(vip_guest_sheet)}")
+                             logger.info(f"DEBUG WHATSAPP_REPLY:   parsed_vip_list tipo: {type(parsed_vip_list)}")
+                             logger.info(f"DEBUG WHATSAPP_REPLY:   parsed_vip_list contenido: {parsed_vip_list}")
                              logger.info(f"DEBUG WHATSAPP_REPLY:   vip_pr_name: {vip_pr_name}")
+                             # --- FIN DEBUG ---
 
-                             added_count = add_vip_guests_to_sheet(vip_guest_sheet, guest_names, vip_pr_name)
+                             # Llamar a función de añadir VIPs (espera lista de dicts)
+                             added_count = add_vip_guests_to_sheet(vip_guest_sheet, parsed_vip_list, vip_pr_name)
 
+                             # Procesar resultado
                              if added_count > 0:
                                  response_text = f"✅ ¡Listo! Se anotaron *{added_count}* invitados VIP para *{selected_event}*."
                                  user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None} # Resetear
-                             else:
+                             elif added_count == -1: # Datos parseados pero inválidos (nombre/email vacíos)
+                                 response_text = f"⚠️ Algunos invitados VIP no tenían nombre o email válido y fueron omitidos."
+                                 user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None} # Resetear igual
+                             else: # added_count == 0 (Error interno o no se añadieron filas válidas)
                                  response_text = f"❌ Hubo un error al guardar los invitados VIP."
                                  user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None} # Resetear
 
                 elif selected_guest_type == 'Normal' or selected_guest_type is None: # Tratar None como Normal
                     logger.info(f"Procesando datos Normales para {sender_phone_normalized}")
                     if not guest_sheet:
-                         logger.error(f"Intento de añadir invitados normales pero la hoja 'Invitados' no está disponible.")
+                         logger.error(f"Hoja 'Invitados' no disponible.")
                          response_text = "❌ Hubo un error interno (hoja Invitados no accesible)."
                          user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None} # Resetear
                     else:
+                        # Lógica anterior para parsear y añadir normales
                         parsed = parse_message_enhanced(incoming_msg)
                         command_type = parsed['command_type']
                         data_lines = parsed['data']
                         categories = parsed['categories']
-
                         if command_type in ['add_guests', 'add_guests_split'] and data_lines:
                             # Llamada a función existente add_guests_to_sheet
                             added_count = add_guests_to_sheet(
@@ -1951,12 +1985,10 @@ def whatsapp_reply():
                                 response_text = "❌ Hubo un error al guardar invitados normales."
                                 user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None} # Resetear
                         else: # Mensaje no reconocido como lista normal
-                             response_text = (f"Espero la lista de invitados normales para *{selected_event}*.\n"
-                                              "Formato: Nombres->Emails.\nO 'cancelar'.")
-                else:
-                     # Caso inesperado: guest_type no es VIP ni Normal
-                     logger.error(f"Estado AWAITING_GUEST_DATA pero guest_type es inválido: {selected_guest_type}")
-                     response_text = "Hubo un error con tu selección. Por favor, empieza de nuevo diciendo 'Hola'."
+                             response_text = (f"Espero la lista normal para *{selected_event}* (Nombres->Emails).\nO 'cancelar'.")
+                else: # Tipo de invitado desconocido
+                     logger.error(f"Estado AWAITING_GUEST_DATA con guest_type inválido: {selected_guest_type}")
+                     response_text = "Hubo un error con tu selección. Empieza de nuevo ('Hola')."
                      user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None} # Resetear
 
 
