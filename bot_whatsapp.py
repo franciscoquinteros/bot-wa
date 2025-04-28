@@ -902,16 +902,22 @@ def analyze_guests_with_ai(guest_list, category_info=None):
 def extract_guests_from_split_format(lines):
     """
     Procesa el formato BLOQUES: Nombres primero, luego Emails, opcionalmente bajo categorías.
-    Versión REVISADA para mayor robustez.
+    Versión REVISADA para mayor robustez y mensajes de error detallados.
+    Permite categorías vacías mientras haya al menos una categoría válida.
 
     Args:
         lines (list): Lista de líneas crudas del mensaje del usuario.
 
     Returns:
-        list: Lista de diccionarios con info estructurada, o lista vacía si hay error grave.
-              {'nombre': str, 'apellido': str, 'email': str, 'genero': str}
+        tuple: (list, dict) donde:
+            - list: Lista de diccionarios con info estructurada, o lista vacía si hay error grave.
+                   {'nombre': str, 'apellido': str, 'email': str, 'genero': str}
+            - dict: Información del error si ocurrió, o None si no hubo errores:
+                   {'error_type': str, 'category': str, 'names_count': int, 'emails_count': int}
     """
     guests = []
+    error_info = None
+    
     # Usaremos listas separadas por categoría para nombres y emails
     data_by_category = {} # Ejemplo: {'Hombres': {'names': [], 'emails': []}, 'Mujeres': {...}}
     category_map = {"Hombres": "Masculino", "Mujeres": "Femenino"}
@@ -997,6 +1003,8 @@ def extract_guests_from_split_format(lines):
     # --- Emparejar Nombres y Emails por Categoría ---
     logger.info("Emparejando nombres y emails recolectados...")
     error_found_in_pairing = False
+    at_least_one_valid_category = False
+    
     for category_key, data in data_by_category.items():
         names = data['names']
         emails = data['emails']
@@ -1005,18 +1013,35 @@ def extract_guests_from_split_format(lines):
 
         logger.info(f"Procesando categoría '{category_key}' ({genero}): {len(names)} nombres, {len(emails)} emails.")
 
+        # Permitir que una categoría esté vacía (0 nombres y 0 emails)
         if not names and not emails:
+            logger.info(f"Categoría '{category_key}' está vacía. Saltando.")
             continue # Saltar categoría vacía
 
+        # Verificar si hay desbalance entre nombres y emails
         if len(names) != len(emails):
             logger.error(f"¡ERROR DE FORMATO! Desbalance en categoría '{category_key}': {len(names)} nombres vs {len(emails)} emails. ¡No se agregarán invitados de esta categoría!")
             error_found_in_pairing = True
+            
+            # Guardar información del error para reportarlo específicamente
+            # Solo sobrescribimos error_info si no hay categorías válidas todavía
+            if not at_least_one_valid_category:
+                error_info = {
+                    'error_type': 'desbalance',
+                    'category': category_key,
+                    'names_count': len(names),
+                    'emails_count': len(emails)
+                }
             continue # Saltar esta categoría por error grave
 
-        if len(names) == 0: # Si hay emails pero no nombres (o viceversa, cubierto arriba)
-             logger.error(f"Categoría '{category_key}' tiene {len(emails)} emails pero 0 nombres. Saltando.")
-             error_found_in_pairing = True
-             continue
+        # Verificar si la categoría tiene datos válidos (al menos 1 nombre y 1 email)
+        if len(names) == 0 or len(emails) == 0:
+            logger.warning(f"Categoría '{category_key}' incompleta: {len(names)} nombres, {len(emails)} emails. Saltando.")
+            # No marcamos esto como error si otra categoría tiene datos válidos
+            continue
+
+        # Esta es una categoría válida
+        at_least_one_valid_category = True
 
         # Emparejar uno a uno
         for i in range(len(names)):
@@ -1033,7 +1058,6 @@ def extract_guests_from_split_format(lines):
             else:
                 # Esto no debería ocurrir si validamos antes, pero por si acaso
                 logger.warning(f"Nombre vacío detectado emparejado con email '{email}'. Saltando.")
-                error_found_in_pairing = True
                 continue
 
             guest_info = {
@@ -1045,14 +1069,34 @@ def extract_guests_from_split_format(lines):
             guests.append(guest_info)
             logger.debug(f"Invitado emparejado OK: {full_name} - {email} ({genero})")
 
-    # Si hubo errores graves de formato (desbalance), podríamos querer indicarlo
-    # if error_found_in_pairing:
-        # Podríamos devolver None o una bandera especial, pero por ahora devolvemos los que sí se pudieron emparejar
-        # logger.error("Se encontraron errores de formato (desbalance nombre/email) en al menos una categoría.")
-        # return None # Opcional: Fallar toda la operación si hay errores
+    # Verificar si se procesó al menos una categoría válida
+    if not at_least_one_valid_category:
+        if error_info:
+            # Ya tenemos información de error de una categoría con desbalance
+            pass
+        elif data_by_category:
+            # No hay categorías válidas, pero hay al menos una categoría
+            error_info = {
+                'error_type': 'all_categories_invalid',
+                'categories': list(data_by_category.keys())
+            }
+        else:
+            # No se encontraron categorías
+            error_info = {
+                'error_type': 'no_valid_data',
+                'message': 'No se encontraron datos válidos para procesar'
+            }
+    
+    # Si no hay error_info pero tampoco hay invitados, algo salió mal
+    if not guests and not error_info:
+        error_info = {
+            'error_type': 'format_error',
+            'category': 'General',
+            'message': 'Formato no reconocido'
+        }
 
     logger.info(f"Extracción formato dividido completada. Total invitados estructurados: {len(guests)}")
-    return guests
+    return (guests, error_info)
 
 def parse_message(message):
     """
@@ -1594,74 +1638,144 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
 def parse_vip_guest_list(message_body):
     """
     Parsea formato VIP (Nombres->Emails) detectando encabezados opcionales
-    'Hombres:'/'Mujeres:'. Devuelve lista de dicts
-    [{'nombre': n, 'email': e, 'genero': g}] o None.
-    'genero' será "Hombre", "Mujer", o None si no había encabezado.
+    'Hombres:'/'Mujeres:'. Permite categorías vacías.
+    
+    Args:
+        message_body (str): Texto del mensaje del usuario
+        
+    Returns:
+        tuple: (list, dict) donde:
+            - list: Lista de diccionarios [{'nombre': n, 'email': e, 'genero': g}] o None.
+                  'genero' será "Hombre", "Mujer", o None si no había encabezado.
+            - dict: Información del error si ocurrió, o None si no hubo errores.
     """
     lines = [line.strip() for line in message_body.split('\n') if line.strip()]
+    error_info = None
+    
     if not lines:
         logger.warning("parse_vip_guest_list: Mensaje vacío.")
-        return None
+        error_info = {
+            'error_type': 'empty_message',
+            'names_count': 0,
+            'emails_count': 0
+        }
+        return None, error_info
 
-    names_data = [] # Guardará {'nombre': n, 'genero': g}
-    emails = []
+    # Estructura para almacenar nombres y emails por categoría
+    categories = {
+        'default': {'names': [], 'emails': []},  # Categoría por defecto
+        'Hombre': {'names': [], 'emails': []},
+        'Mujer': {'names': [], 'emails': []}
+    }
+    
+    current_category = 'default'
     parsing_names = True
-    current_gender = None # Género actual detectado por encabezado
-
+    
     for line in lines:
         line_lower = line.lower()
 
         # Detectar encabezados de Género
         if line_lower.startswith('hombres'):
-            current_gender = "Hombre"
+            current_category = 'Hombre'
+            parsing_names = True  # Después de un encabezado, esperamos nombres
             logger.debug("parse_vip_guest_list: Detectado encabezado 'Hombres'.")
             continue # Saltar la línea del encabezado
+            
         elif line_lower.startswith('mujeres'):
-            current_gender = "Mujer"
+            current_category = 'Mujer'
+            parsing_names = True  # Después de un encabezado, esperamos nombres
             logger.debug("parse_vip_guest_list: Detectado encabezado 'Mujeres'.")
             continue # Saltar la línea del encabezado
 
         # Detectar Emails
         is_email = '@' in line and '.' in line.split('@')[-1] and len(line.split('@')[0]) > 0
         if is_email:
-            parsing_names = False
+            if parsing_names:
+                # Si es el primer email que encontramos, cambiamos a modo email
+                parsing_names = False
+            
             if re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", line):
-                 emails.append(line)
+                categories[current_category]['emails'].append(line)
             else:
-                 logger.warning(f"parse_vip_guest_list: Línea '{line}' parece email pero no valida regex.")
-                 # Ignorar email inválido
+                logger.warning(f"parse_vip_guest_list: Línea '{line}' parece email pero no valida regex.")
         elif parsing_names:
-            # Añadir nombre CON el género detectado HASTA ESE MOMENTO
+            # Añadir nombre si parece un nombre válido
             if re.match(r"^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s'.]+$", line) and len(line) > 1:
-                 names_data.append({'nombre': line, 'genero': current_gender}) # Guarda dict nombre+genero
-                 # logger.debug(f"parse_vip_guest_list: Nombre añadido: '{line}', Genero: {current_gender}")
+                categories[current_category]['names'].append({'nombre': line, 'genero': current_category if current_category != 'default' else None})
             else:
-                 logger.warning(f"parse_vip_guest_list: Línea '{line}' ignorada (modo nombre).")
-        # else: Ignorar líneas que no son email si ya estamos en modo email
+                logger.warning(f"parse_vip_guest_list: Línea '{line}' ignorada (modo nombre).")
+        else:
+            # Si ya pasamos al modo email, ignoramos líneas que no son emails
+            logger.warning(f"parse_vip_guest_list: Ignorando línea no-email '{line}' en modo emails.")
 
-    logger.info(f"Parseo VIP: {len(names_data)} nombres encontrados, {len(emails)} emails encontrados.")
-
-    # Validar cantidades
-    if not names_data or not emails or len(names_data) != len(emails):
-        logger.error(f"Error formato VIP: Faltan/Desbalance - N:{len(names_data)} E:{len(emails)}.")
-        return None
-
-    # Emparejar Nombres (con su género) y Emails
+    # Verificar si hay datos válidos en alguna categoría
+    all_names = []
+    all_emails = []
+    valid_categories = []
+    
+    for cat_name, cat_data in categories.items():
+        names_count = len(cat_data['names'])
+        emails_count = len(cat_data['emails'])
+        
+        logger.info(f"Categoría '{cat_name}': {names_count} nombres, {emails_count} emails.")
+        
+        # Verificar si esta categoría tiene datos
+        if names_count > 0 and emails_count > 0:
+            # Verificar si hay desbalance
+            if names_count != emails_count:
+                logger.error(f"Desbalance en categoría '{cat_name}': {names_count} nombres, {emails_count} emails.")
+                # Guardamos información del error pero seguimos procesando otras categorías
+                if error_info is None:
+                    error_info = {
+                        'error_type': 'desbalance',
+                        'category': cat_name,
+                        'names_count': names_count,
+                        'emails_count': emails_count
+                    }
+            else:
+                # Categoría válida
+                valid_categories.append(cat_name)
+                all_names.extend(cat_data['names'])
+                all_emails.extend(cat_data['emails'])
+        elif names_count > 0 or emails_count > 0:
+            # Categoría incompleta (tiene nombres o emails, pero no ambos)
+            logger.warning(f"Categoría '{cat_name}' incompleta: {names_count} nombres, {emails_count} emails.")
+            if error_info is None:
+                error_info = {
+                    'error_type': 'incomplete_category',
+                    'category': cat_name,
+                    'names_count': names_count,
+                    'emails_count': emails_count
+                }
+        # Si la categoría está vacía (0 nombres, 0 emails), la ignoramos
+    
+    # Si no hay categorías válidas
+    if not valid_categories:
+        logger.error("No hay categorías válidas.")
+        if error_info is None:
+            error_info = {
+                'error_type': 'no_valid_categories',
+                'message': 'No se encontraron categorías con datos válidos'
+            }
+        return None, error_info
+    
+    # Crear los pares de invitados
     paired_guests = []
-    for i in range(len(names_data)):
-        name_info = names_data[i] # Esto es {'nombre': n, 'genero': g}
-        email_clean = emails[i].strip()
-        if name_info.get('nombre') and email_clean:
-             paired_guests.append({
-                 'nombre': name_info['nombre'].strip(),
-                 'email': email_clean,
-                 'genero': name_info['genero'] # Puede ser 'Hombre', 'Mujer' o None
-             })
-
-    if len(paired_guests) != len(names_data):
-         logger.warning("Algunos pares nombre/email VIP fueron omitidos por datos vacíos.")
-
-    return paired_guests if paired_guests else None
+    for category in valid_categories:
+        cat_data = categories[category]
+        for i in range(min(len(cat_data['names']), len(cat_data['emails']))):
+            name_info = cat_data['names'][i]
+            email_clean = cat_data['emails'][i].strip()
+            
+            if name_info.get('nombre') and email_clean:
+                paired_guests.append({
+                    'nombre': name_info['nombre'].strip(),
+                    'email': email_clean,
+                    'genero': name_info['genero']
+                })
+    
+    logger.info(f"Total de invitados VIP emparejados: {len(paired_guests)}")
+    return paired_guests, None if paired_guests else error_info
     
 # MODIFICADO: Añadir sheet_conn, buscar PR name y filtrar por él.
 def get_guests_by_pr(sheet_conn, phone_number):
@@ -2073,6 +2187,7 @@ def whatsapp_reply():
     sender_phone_normalized = None
     sheet_conn = None
     is_vip = False # Variable para saber si el usuario es VIP
+    error_info = None
 
     try:
         data = request.form.to_dict()
@@ -2386,7 +2501,37 @@ def whatsapp_reply():
                                 
                                 if not structured_guests:
                                     logger.error("La extracción de invitados devolvió una lista vacía o None.")
-                                    response_text = "⚠️ No pude entender el formato. Por favor revisa y vuelve a intentar."
+                                    
+                                    # Mensaje de error detallado basado en la información del error
+                                    if error_info and error_info['error_type'] == 'desbalance':
+                                        response_text = (f"⚠️ Formato incorrecto. Encontré un desbalance en la categoría '{error_info['category']}':\n\n"
+                                                        f"• {error_info['names_count']} nombres\n"
+                                                        f"• {error_info['emails_count']} emails\n\n"
+                                                        f"La cantidad de nombres y emails debe coincidir exactamente en cada categoría.")
+                                    elif error_info and error_info['error_type'] == 'all_categories_invalid':
+                                        response_text = ("⚠️ No se pudo procesar ninguna categoría. Revisa que cada categoría tenga:\n\n"
+                                                        "1. El mismo número de nombres y emails\n"
+                                                        "2. Al menos un nombre y un email válidos\n\n"
+                                                        "Recuerda que puedes tener solo categoría 'Hombres' o solo 'Mujeres', no es necesario tener ambas.")
+                                    elif error_info and error_info['error_type'] == 'no_valid_data':
+                                        response_text = ("⚠️ No se encontraron datos válidos para procesar. Asegúrate de enviar:\n\n"
+                                                        "Nombres (uno por línea)\n"
+                                                        "email1@ejemplo.com\n"
+                                                        "email2@ejemplo.com\n\n"
+                                                        "O usa encabezados de categoría:\n\n"
+                                                        "Hombres:\n"
+                                                        "Nombre Apellido\n"
+                                                        "email@ejemplo.com\n\n"
+                                                        "Mujeres:\n"
+                                                        "Nombre Apellido\n"
+                                                        "email@ejemplo.com")
+                                    else:
+                                        response_text = ("⚠️ Formato incorrecto. Asegúrate de enviar:\n\n"
+                                                        "Nombres (uno por línea)\n"
+                                                        "email1@ejemplo.com\n"
+                                                        "email2@ejemplo.com\n\n"
+                                                        "La cantidad de nombres y emails debe coincidir en cada categoría.\n"
+                                                        "Puedes usar solo 'Hombres:', solo 'Mujeres:', ambas o ninguna categoría.")
                                 else:
                                     # Procesar y añadir a la hoja específica
                                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
