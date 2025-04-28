@@ -2297,10 +2297,10 @@ def whatsapp_reply():
                                         response_text = "⚠️ Faltan emails o no son válidos. Revisa el formato."
                                     elif valid_guests:
                                         # Obtener nombre del PR
-                                        pr_name = phone_number # Valor por defecto
+                                        pr_name = sender_phone_normalized  # CORREGIDO: Usar sender_phone_normalized en lugar de phone_number
                                         try:
                                             phone_to_pr_map = sheet_conn.get_phone_pr_mapping()
-                                            pr_name_found = phone_to_pr_map.get(phone_number)
+                                            pr_name_found = phone_to_pr_map.get(sender_phone_normalized)
                                             if pr_name_found:
                                                 pr_name = pr_name_found
                                         except Exception as e:
