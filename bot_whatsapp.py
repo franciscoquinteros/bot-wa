@@ -2050,12 +2050,12 @@ def whatsapp_reply():
                         response_text = ( # Instrucciones para formato normal
                             f"Perfecto, evento: *{selected_event}*.\n\n"
                             "Ahora envíame la lista (Nombres primero, luego Emails):\n\n"
-                            "*Hombres:* \nNombre Apellido\n...\n Nombre Apellido\n\n"
-                            "email1@ejemplo.com\n...\n\n"
-                            "email2@ejemplo.com\n...\n\n"
-                            "*Mujeres:* \nNombre Apellido\n...\n Nombre Apellido\n\n"
-                            "email1@ejemplo.com\n...\n\n"
-                            "email2@ejemplo.com\n...\n\n"
+                            "*Hombres:* \nNombre Apellido\n Nombre Apellido\n\n"
+                            "email1@ejemplo.com\n"
+                            "email2@ejemplo.com\n\n"
+                            "*Mujeres:* \nNombre Apellido\n Nombre Apellido\n\n"
+                            "email1@ejemplo.com\n"
+                            "email2@ejemplo.com\n\n"
                             "Escribe 'cancelar' para cambiar."
                         )
                         user_status['state'] = STATE_AWAITING_GUEST_DATA
