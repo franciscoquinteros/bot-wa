@@ -2000,7 +2000,7 @@ def whatsapp_reply():
                     response_text = "¡Hola! 👋 No encontré eventos disponibles."
                 else:
                     event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
-                    base_response_text = f"¡Hola! 👋 Eventos disponibles:\n\n{event_list_text}\n\nResponde con el *número* del evento."
+                    base_response_text = f"¡Hola! 👋 Eventos disponibles: \n\n Solo invitaciones GENERALES \n\n{event_list_text}\n\nResponde con el *número* del evento."
                     if is_vip:
                         vip_message = "\n\n✨ *Nota: Tienes opciones VIP disponibles.*"
                         response_text = base_response_text + vip_message
@@ -2050,9 +2050,12 @@ def whatsapp_reply():
                         response_text = ( # Instrucciones para formato normal
                             f"Perfecto, evento: *{selected_event}*.\n\n"
                             "Ahora envíame la lista (Nombres primero, luego Emails):\n\n"
-                            "*Hombres:* (Opcional)\nNombre Apellido\n...\n"
+                            "*Hombres:* \nNombre Apellido\n...\n Nombre Apellido\n\n"
                             "email1@ejemplo.com\n...\n\n"
-                            # ... (resto de instrucciones) ...
+                            "email2@ejemplo.com\n...\n\n"
+                            "*Mujeres:* \nNombre Apellido\n...\n Nombre Apellido\n\n"
+                            "email1@ejemplo.com\n...\n\n"
+                            "email2@ejemplo.com\n...\n\n"
                             "Escribe 'cancelar' para cambiar."
                         )
                         user_status['state'] = STATE_AWAITING_GUEST_DATA
