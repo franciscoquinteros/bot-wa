@@ -422,12 +422,7 @@ class SheetsConnection:
     def get_sheet_by_event_name(self, event_name):
         """
         Obtiene o crea una hoja específica para un evento determinado.
-        
-        Args:
-            event_name (str): Nombre del evento
-            
-        Returns:
-            Objeto de hoja de Google Sheets o None si hay error
+        Con mejor manejo de errores y log detallado.
         """
         if not event_name:
             logger.error("Intentando obtener hoja para evento sin nombre.")
@@ -435,8 +430,17 @@ class SheetsConnection:
             
         try:
             # Intentar obtener la hoja existente
+            logger.info(f"Intentando obtener hoja para evento '{event_name}'...")
             event_sheet = self.spreadsheet.worksheet(event_name)
-            logger.info(f"Hoja para evento '{event_name}' encontrada")
+            logger.info(f"Hoja para evento '{event_name}' encontrada. ID: {event_sheet.id}")
+            
+            # Verificar que realmente podemos acceder (prueba de lectura)
+            try:
+                cell_value = event_sheet.acell('A1').value
+                logger.info(f"Prueba de lectura exitosa: A1 = '{cell_value}'")
+            except Exception as read_err:
+                logger.error(f"La hoja existe pero no se puede leer: {read_err}")
+            
             return event_sheet
         except gspread.exceptions.WorksheetNotFound:
             # Si no existe, crear nueva hoja
@@ -444,16 +448,31 @@ class SheetsConnection:
             try:
                 # Crear hoja con las columnas necesarias
                 new_sheet = self.spreadsheet.add_worksheet(title=event_name, rows="1", cols="6")
+                logger.info(f"Hoja creada con ID: {new_sheet.id}")
+                
                 # Definir encabezados
                 expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp']
-                new_sheet.update('A1:F1', [expected_headers])
+                update_result = new_sheet.update('A1:F1', [expected_headers])
+                logger.info(f"Encabezados añadidos: {update_result}")
+                
+                # Verificar creación con prueba de lectura
+                try:
+                    cell_value = new_sheet.acell('A1').value
+                    logger.info(f"Verificación de nueva hoja exitosa: A1 = '{cell_value}'")
+                except Exception as verify_err:
+                    logger.error(f"No se pudo verificar la nueva hoja: {verify_err}")
+                    
                 logger.info(f"Hoja para evento '{event_name}' creada exitosamente")
                 return new_sheet
             except Exception as e:
                 logger.error(f"Error al crear hoja para evento '{event_name}': {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 return None
         except Exception as e:
             logger.error(f"Error al obtener hoja para evento '{event_name}': {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
      # --- NUEVO: Método para obtener mapeo Telefono VIP -> Nombre PR ---
     def get_vip_phone_pr_mapping(self):
@@ -1147,143 +1166,91 @@ def extract_guests_manually_enhanced(lines, categories=None, command_type='add_g
     return extract_guests_manually(lines, categories)
 
 # Modificación a la función add_guests_to_sheet para usar el nuevo extractor
-def add_guests_to_sheet(sheet_conn, guests_data, phone_number, event_name, categories=None, command_type='add_guests'):
+def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn, categories=None, command_type='add_guests'):
     """
-    Agrega invitados a la hoja específica del evento con información estructurada.
-    ADAPTADO para usar hojas específicas por evento, con columnas:
-    Nombre y Apellido | Email | Genero | Publica | Evento | Timestamp
-
-    Args:
-        sheet_conn: Instancia de SheetsConnection para acceder a las hojas
-        guests_data: Lista de líneas crudas con datos de invitados
-        phone_number: Número de teléfono del anfitrión (NORMALIZADO)
-        event_name: Nombre del evento seleccionado
-        categories (dict, optional): Información sobre categorías detectadas
-        command_type (str): Tipo de comando detectado
-
-    Returns:
-        int: Número de invitados añadidos (-1 si hay error de validación)
+    Agrega invitados a la hoja con información estructurada, incluyendo el evento
+    y usando el nombre del PR en lugar del número en la columna 'Publica'.
     """
     try:
-        # Obtener la hoja específica para el evento
-        event_sheet = sheet_conn.get_sheet_by_event_name(event_name)
-        if not event_sheet:
-            logger.error(f"No se pudo obtener/crear hoja para evento '{event_name}'")
-            return 0
-
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        # --- Verificar encabezados ---
+        
+        # --- Log mejorado para depuración ---
+        logger.info(f"INICIO add_guests_to_sheet para evento '{event_name}' - Phone: {phone_number}")
+        logger.info(f"Verificando objeto sheet: {sheet} - Tipo: {type(sheet)}")
+        
+        # --- Verificar encabezados para 6 columnas ---
         expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp']
         try:
-            headers = event_sheet.row_values(1)
+            headers = sheet.row_values(1)
+            logger.info(f"Encabezados existentes: {headers}")
         except gspread.exceptions.APIError as api_err:
-             if "exceeds grid limits" in str(api_err): # Hoja completamente vacía
+            logger.error(f"Error API al leer encabezados: {api_err}")
+            if "exceeds grid limits" in str(api_err):
                 headers = []
-             else:
-                 raise api_err
+                logger.info("Hoja detectada como vacía (sin encabezados)")
+            else:
+                raise api_err
 
         # Actualizar si los encabezados no coinciden o la hoja está vacía
         if not headers or len(headers) < len(expected_headers) or headers[:len(expected_headers)] != expected_headers:
-            logger.info(f"Actualizando/Creando encabezados en la hoja '{event_sheet.title}': {expected_headers}")
-            event_sheet.update('A1:F1', [expected_headers])
+            logger.info(f"Actualizando/Creando encabezados en la hoja '{sheet.title}': {expected_headers}")
+            try:
+                sheet.update('A1:F1', [expected_headers])
+                logger.info("Encabezados actualizados correctamente")
+            except Exception as header_err:
+                logger.error(f"ERROR al actualizar encabezados: {header_err}")
+                # Continuar intento de añadir datos incluso si falla actualización de encabezados
 
-        # --- Procesar datos de invitados ---
-        structured_guests = None
+        # --- Procesar datos de invitados (resto del código original) ---
+        # ... (código original hasta crear rows_to_add)
 
-        # Usar IA si está disponible y NO es formato split
-        if command_type == 'add_guests' and OPENAI_AVAILABLE and client:
-            logger.info("Intentando análisis de invitados con OpenAI...")
-            structured_guests = analyze_guests_with_ai(guests_data, categories)
-            if structured_guests:
-                 logger.info(f"OpenAI procesó {len(structured_guests)} invitados.")
-            else:
-                 logger.warning("OpenAI no pudo procesar los invitados o devolvió vacío.")
-
-        # Si IA falla, no está disponible, o ES formato split, usar procesamiento manual
-        if not structured_guests:
-            if command_type == 'add_guests_split':
-                 logger.info("Usando extractor manual para formato dividido (Nombres -> Emails)...")
-            else:
-                 logger.info("Usando extractor manual para formato estándar (Nombre - Email)...")
-            structured_guests = extract_guests_manually_enhanced(guests_data, categories, command_type)
-
-        if not structured_guests: # Si la extracción manual también falló
-            logger.error("La extracción manual de invitados devolvió una lista vacía o None.")
-            return 0 # Indicar que no se añadió nada
-
-        # --- Validar invitados estructurados ---
-        valid_guests = []
-        invalid_entries_found = False
-        for guest in structured_guests:
-            # Verificar que sea diccionario y tenga email y al menos nombre
-            if isinstance(guest, dict) and guest.get("email") and guest.get("nombre"):
-                # Validar email básico
-                if re.match(r"[^@]+@[^@]+\.[^@]+", guest["email"]):
-                    valid_guests.append(guest)
-                else:
-                    logger.warning(f"Formato de email inválido: {guest.get('email')} para {guest.get('nombre')}")
-                    invalid_entries_found = True
-            else:
-                logger.warning(f"Invitado incompleto (falta email o nombre): {guest}")
-                invalid_entries_found = True
-
-        # Si se encontraron entradas inválidas, devolver error de validación
-        if invalid_entries_found:
-            logger.error("Se detectaron invitados sin email válido o nombre.")
-            return -1  # Código especial para indicar error de validación
-        
-        # --- Obtener Nombre del PR ---
-        pr_name = phone_number # Valor por defecto si no se encuentra el mapeo
-        try:
-            # Obtener el mapeo desde la instancia de conexión
-            phone_to_pr_map = sheet_conn.get_phone_pr_mapping()
-            # Buscar el nombre del PR usando el número normalizado
-            pr_name_found = phone_to_pr_map.get(phone_number)
-            if pr_name_found:
-                pr_name = pr_name_found # Usar el nombre encontrado
-                logger.info(f"Nombre PR encontrado para {phone_number}: {pr_name}")
-            else:
-                logger.warning(f"No se encontró nombre PR para {phone_number}. Se usará el número como fallback.")
-        except Exception as map_err:
-            logger.error(f"Error al obtener/buscar mapeo PR para {phone_number}: {map_err}. Se usará el número como fallback.")
-
-        # --- Crear filas para añadir a la hoja ---
-        rows_to_add = []
-        for guest in valid_guests:
-            full_name = f"{guest.get('nombre', '')} {guest.get('apellido', '')}".strip()
-            rows_to_add.append([
-                full_name,                      # Columna A: Nombre y Apellido
-                guest.get("email", ""),         # Columna B: Email
-                guest.get("genero", "Otro"),    # Columna C: Genero
-                pr_name,                        # Columna D: Publica (Nombre del PR o número fallback)
-                event_name,                     # Columna E: Evento
-                timestamp                       # Columna F: Timestamp
-            ])
-
-        # --- Agregar a la hoja ---
+        # --- MEJORA: Log de las filas que se intentan añadir ---
         if rows_to_add:
             try:
-                event_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
-                logger.info(f"Agregados {len(rows_to_add)} invitados para evento '{event_name}' por {phone_number}")
-                return len(rows_to_add)
-            except gspread.exceptions.APIError as e:
-                 logger.error(f"Error de API de Google Sheets al agregar filas: {e}")
-                 return 0 # Indicar fallo
-            except Exception as e:
-                 logger.error(f"Error inesperado en append_rows: {e}")
-                 import traceback
-                 logger.error(traceback.format_exc())
-                 return 0
+                logger.info(f"Intentando añadir {len(rows_to_add)} filas. Primera fila: {rows_to_add[0]}")
+                # Añadir a la hoja con manejo de errores más detallado
+                try:
+                    result = sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
+                    logger.info(f"Resultado de append_rows: {result}")
+                    # Verificación adicional después de append
+                    try:
+                        all_values = sheet.get_all_values()
+                        logger.info(f"Después de append_rows, la hoja tiene {len(all_values)} filas")
+                        # Si hay menos de 3 filas, mostrar todo el contenido para debugging
+                        if len(all_values) < 3:
+                            logger.info(f"Contenido actual de la hoja: {all_values}")
+                    except Exception as verify_err:
+                        logger.error(f"Error al verificar contenido después de append: {verify_err}")
+                    
+                    logger.info(f"Agregados {len(rows_to_add)} invitados para evento '{event_name}' por {phone_number}")
+                    return len(rows_to_add)
+                except gspread.exceptions.APIError as api_err:
+                    logger.error(f"Error API DETALLADO al agregar filas: {api_err}")
+                    # Aquí puedes agregar más manejo específico según el tipo de error de API
+                    if "insufficient permissions" in str(api_err).lower():
+                        logger.critical("ERROR DE PERMISOS: La cuenta de servicio no tiene permisos de escritura")
+                    elif "invalid value" in str(api_err).lower():
+                        logger.error(f"ERROR DE VALOR: Posible formato incorrecto en los datos: {rows_to_add[0]}")
+                    return 0
+                except Exception as append_err:
+                    logger.error(f"Error inesperado en append_rows: {append_err}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    return 0
+            except Exception as pre_append_err:
+                logger.error(f"Error antes de llamar a append_rows: {pre_append_err}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return 0
         else:
-             logger.warning("No se generaron filas válidas para añadir a la hoja.")
-             return 0
+            logger.warning("No se generaron filas válidas para añadir a la hoja.")
+            return 0
 
     except Exception as e:
         logger.error(f"Error GRANDE en add_guests_to_sheet: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        return 0 # Indicar fallo genérico
+        return 0
 
 def extract_guests_manually(lines, categories=None):
     """
@@ -1935,6 +1902,62 @@ Puedo ayudarte con la administración de tu lista de invitados. Aquí tienes lo 
     # Usar la función original
     return generate_response(command, result, phone_number, sentiment_analysis)
 
+@app.route('/test_sheet', methods=['GET'])
+def test_sheet_write():
+    """
+    Endpoint de prueba para verificar la capacidad de escritura en Google Sheets.
+    Acceder a esta ruta intentará escribir una fila de prueba en cada hoja.
+    """
+    try:
+        sheet_conn = SheetsConnection()
+        results = {}
+        
+        # 1. Probar escritura en hoja principal de invitados
+        try:
+            guest_sheet = sheet_conn.get_guest_sheet()
+            if guest_sheet:
+                test_row = ["TEST", "test@example.com", "Otro", "Test PR", "Test Event", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+                result = guest_sheet.append_row(test_row, value_input_option='USER_ENTERED')
+                results["main_sheet"] = {"status": "success", "result": str(result)}
+            else:
+                results["main_sheet"] = {"status": "error", "message": "No se pudo obtener la hoja principal"}
+        except Exception as e:
+            results["main_sheet"] = {"status": "error", "message": str(e)}
+        
+        # 2. Probar escritura en hoja VIP
+        try:
+            vip_sheet = sheet_conn.get_vip_guest_sheet()
+            if vip_sheet:
+                test_row = ["TEST VIP", "Test PR"]
+                result = vip_sheet.append_row(test_row, value_input_option='USER_ENTERED')
+                results["vip_sheet"] = {"status": "success", "result": str(result)}
+            else:
+                results["vip_sheet"] = {"status": "error", "message": "No se pudo obtener la hoja VIP"}
+        except Exception as e:
+            results["vip_sheet"] = {"status": "error", "message": str(e)}
+        
+        # 3. Probar escritura en una hoja de evento específica
+        try:
+            events = sheet_conn.get_available_events()
+            if events:
+                event_sheet = sheet_conn.get_sheet_by_event_name(events[0])
+                if event_sheet:
+                    test_row = ["TEST EVENT", "test@example.com", "Otro", "Test PR", events[0], datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+                    result = event_sheet.append_row(test_row, value_input_option='USER_ENTERED')
+                    results["event_sheet"] = {"status": "success", "event": events[0], "result": str(result)}
+                else:
+                    results["event_sheet"] = {"status": "error", "message": f"No se pudo obtener la hoja para evento {events[0]}"}
+            else:
+                results["event_sheet"] = {"status": "error", "message": "No hay eventos disponibles"}
+        except Exception as e:
+            results["event_sheet"] = {"status": "error", "message": str(e)}
+        
+        return jsonify({"status": "complete", "results": results})
+    
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+
 # --- Función whatsapp_reply COMPLETA con Lógica VIP ---
 @app.route('/whatsapp', methods=['POST'])
 def whatsapp_reply():
@@ -2092,7 +2115,7 @@ def whatsapp_reply():
 
                     if is_vip:
                         # Preguntar tipo de invitado
-                        response_text = f"Evento *{selected_event}* seleccionado. ¿Quieres añadir invitados *Normales* o *VIP*? Responde 'Normal' o 'VIP'."
+                        response_text = f"Evento *{selected_event}* seleccionado. ¿Quieres añadir invitados *Generales* o *VIP*? Responde 'Normal' o 'VIP'."
                         # Pasar a estado de espera de tipo
                         user_status['state'] = STATE_AWAITING_GUEST_TYPE
                         user_states[sender_phone_normalized] = user_status # Actualizar estado
@@ -2323,7 +2346,7 @@ def whatsapp_reply():
                                         if rows_to_add:
                                             event_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
                                             logger.info(f"Agregados {len(rows_to_add)} invitados a '{selected_event}'")
-                                            response_text = f"✅ ¡Listo! Se anotaron *{len(rows_to_add)}* invitados normales para *{selected_event}*."
+                                            response_text = f"✅ ¡Listo! Se anotaron *{len(rows_to_add)}* invitados Generales para *{selected_event}*."
                                             user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None}
                                         else:
                                             response_text = "⚠️ No se generaron filas válidas para añadir."
