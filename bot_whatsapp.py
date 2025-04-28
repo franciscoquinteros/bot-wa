@@ -1097,6 +1097,7 @@ def extract_guests_from_split_format(lines):
         }
 
     logger.info(f"Extracción formato dividido completada. Total invitados estructurados: {len(guests)}")
+    logger.info(f"DEBUG PARSER OUTPUT: Estructura final devuelta por el parser: {guests}") # Imprime la lista completa
     return (guests, error_info)
 
 def parse_message(message):
