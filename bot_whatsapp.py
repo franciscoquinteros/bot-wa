@@ -664,6 +664,57 @@ class SheetsConnection:
             logger.error(f"Error inesperado al obtener números autorizados: {e}. Usando caché anterior si existe.")
             return self._phone_cache if self._phone_cache is not None else set()
 
+
+    def add_checkboxes_to_column(sheet, column_index, start_row=2, end_row=None):
+        """
+        Agrega casillas de verificación (checkboxes) a una columna específica.
+        
+        Args:
+            sheet: Objeto de hoja de Google Sheets
+            column_index: Índice de la columna (1-based, ejemplo: 7 para columna G)
+            start_row: Fila inicial (default: 2, para saltar encabezados)
+            end_row: Fila final (default: None, para toda la columna)
+        """
+        try:
+            if end_row is None:
+                # Obtener todas las filas para determinar el rango
+                all_values = sheet.get_all_values()
+                end_row = len(all_values) + 10  # Agregar algunas filas adicionales para futuras entradas
+            
+            # Construir el rango en notación A1 (ej: G2:G100)
+            start_cell = gspread.utils.rowcol_to_a1(start_row, column_index)
+            end_cell = gspread.utils.rowcol_to_a1(end_row, column_index)
+            range_name = f"{start_cell}:{end_cell}"
+            
+            # Crear la regla de validación para checkboxes
+            checkbox_rule = {
+                "setDataValidation": {
+                    "range": {
+                        "sheetId": sheet.id,
+                        "startRowIndex": start_row - 1,  # Ajustar a 0-based index
+                        "endRowIndex": end_row,
+                        "startColumnIndex": column_index - 1,  # Ajustar a 0-based index
+                        "endColumnIndex": column_index
+                    },
+                    "rule": {
+                        "condition": {
+                            "type": "BOOLEAN"
+                        }
+                    }
+                }
+            }
+            
+            # Aplicar la regla usando la API avanzada
+            sheet.spreadsheet.batch_update({"requests": [checkbox_rule]})
+            
+            logger.info(f"Casillas de verificación agregadas a la columna {column_index} (rango {range_name})")
+            return True
+        
+        except Exception as e:
+            logger.error(f"Error al agregar casillas de verificación: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
     # --- Método para obtener el mapeo Telefono -> Nombre PR ---
 
     def get_phone_pr_mapping(self):
@@ -1392,58 +1443,6 @@ def extract_guest_info_from_line(line, category=None):
             guest_info["genero"] = "Masculino"
     
     return guest_info
-
-def add_checkboxes_to_column(sheet, column_index, start_row=2, end_row=None):
-    """
-    Agrega casillas de verificación (checkboxes) a una columna específica.
-    
-    Args:
-        sheet: Objeto de hoja de Google Sheets
-        column_index: Índice de la columna (1-based, ejemplo: 7 para columna G)
-        start_row: Fila inicial (default: 2, para saltar encabezados)
-        end_row: Fila final (default: None, para toda la columna)
-    """
-    try:
-        if end_row is None:
-            # Obtener todas las filas para determinar el rango
-            all_values = sheet.get_all_values()
-            end_row = len(all_values) + 10  # Agregar algunas filas adicionales para futuras entradas
-        
-        # Construir el rango en notación A1 (ej: G2:G100)
-        start_cell = gspread.utils.rowcol_to_a1(start_row, column_index)
-        end_cell = gspread.utils.rowcol_to_a1(end_row, column_index)
-        range_name = f"{start_cell}:{end_cell}"
-        
-        # Crear la regla de validación para checkboxes
-        checkbox_rule = {
-            "setDataValidation": {
-                "range": {
-                    "sheetId": sheet.id,
-                    "startRowIndex": start_row - 1,  # Ajustar a 0-based index
-                    "endRowIndex": end_row,
-                    "startColumnIndex": column_index - 1,  # Ajustar a 0-based index
-                    "endColumnIndex": column_index
-                },
-                "rule": {
-                    "condition": {
-                        "type": "BOOLEAN"
-                    }
-                }
-            }
-        }
-        
-        # Aplicar la regla usando la API avanzada
-        sheet.spreadsheet.batch_update({"requests": [checkbox_rule]})
-        
-        logger.info(f"Casillas de verificación agregadas a la columna {column_index} (rango {range_name})")
-        return True
-    
-    except Exception as e:
-        logger.error(f"Error al agregar casillas de verificación: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return False
-
 
 def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn, categories=None, command_type='add_guests'):
     """
