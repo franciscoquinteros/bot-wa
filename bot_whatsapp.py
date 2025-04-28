@@ -2616,7 +2616,7 @@ def whatsapp_reply():
                                     rows_to_add = []
                                     for guest in valid_guests_for_sheet:
                                         # Asumiendo que tu parser asigna 'genero' (Hombre/Mujer/Otro)
-                                        full_name = guest.get('nombre', '').strip() # Parser debería dar nombre completo si es posible
+                                        full_name = f"{guest.get('nombre', '')} {guest.get('apellido', '')}".strip()
                                         rows_to_add.append([
                                             full_name,
                                             guest.get("email", ""),
