@@ -449,7 +449,7 @@ class SheetsConnection:
                     
                     # Aplicar casillas de verificación a la columna ENVIADO
                     try:
-                        self.add_checkboxes_to_column(event_sheet, 7)  # 7 para columna G (ENVIADO)
+                        add_checkboxes_to_column(event_sheet, 7)  # 7 para columna G (ENVIADO)
                     except Exception as checkbox_err:
                         logger.error(f"Error al aplicar casillas de verificación: {checkbox_err}")
             except Exception as read_err:
@@ -471,7 +471,7 @@ class SheetsConnection:
                 
                 # Aplicar casillas de verificación a la columna ENVIADO
                 try:
-                    self.add_checkboxes_to_column(new_sheet, 7)  # 7 para columna G (ENVIADO)
+                    add_checkboxes_to_column(new_sheet, 7)
                 except Exception as checkbox_err:
                     logger.error(f"Error al aplicar casillas de verificación: {checkbox_err}")
                 
@@ -665,57 +665,7 @@ class SheetsConnection:
             return self._phone_cache if self._phone_cache is not None else set()
 
 
-    def add_checkboxes_to_column(sheet, column_index, start_row=2, end_row=None):
-        """
-        Agrega casillas de verificación (checkboxes) a una columna específica.
-        
-        Args:
-            sheet: Objeto de hoja de Google Sheets
-            column_index: Índice de la columna (1-based, ejemplo: 7 para columna G)
-            start_row: Fila inicial (default: 2, para saltar encabezados)
-            end_row: Fila final (default: None, para toda la columna)
-        """
-        try:
-            if end_row is None:
-                # Obtener todas las filas para determinar el rango
-                all_values = sheet.get_all_values()
-                end_row = len(all_values) + 10  # Agregar algunas filas adicionales para futuras entradas
-            
-            # Construir el rango en notación A1 (ej: G2:G100)
-            start_cell = gspread.utils.rowcol_to_a1(start_row, column_index)
-            end_cell = gspread.utils.rowcol_to_a1(end_row, column_index)
-            range_name = f"{start_cell}:{end_cell}"
-            
-            # Crear la regla de validación para checkboxes
-            checkbox_rule = {
-                "setDataValidation": {
-                    "range": {
-                        "sheetId": sheet.id,
-                        "startRowIndex": start_row - 1,  # Ajustar a 0-based index
-                        "endRowIndex": end_row,
-                        "startColumnIndex": column_index - 1,  # Ajustar a 0-based index
-                        "endColumnIndex": column_index
-                    },
-                    "rule": {
-                        "condition": {
-                            "type": "BOOLEAN"
-                        }
-                    }
-                }
-            }
-            
-            # Aplicar la regla usando la API avanzada
-            sheet.spreadsheet.batch_update({"requests": [checkbox_rule]})
-            
-            logger.info(f"Casillas de verificación agregadas a la columna {column_index} (rango {range_name})")
-            return True
-        
-        except Exception as e:
-            logger.error(f"Error al agregar casillas de verificación: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return False
-    # --- Método para obtener el mapeo Telefono -> Nombre PR ---
+        # --- Método para obtener el mapeo Telefono -> Nombre PR ---
 
     def get_phone_pr_mapping(self):
         """
@@ -803,6 +753,58 @@ def analyze_sentiment(text):
         logger.error(f"Error al analizar sentimiento con OpenAI: {e}")
         # En caso de error, usar análisis basado en reglas
         return analyze_with_rules(text)
+
+# Definir fuera de cualquier clase (como función global)
+def add_checkboxes_to_column(sheet, column_index, start_row=2, end_row=None):
+    """
+    Agrega casillas de verificación (checkboxes) a una columna específica.
+    
+    Args:
+        sheet: Objeto de hoja de Google Sheets
+        column_index: Índice de la columna (1-based, ejemplo: 7 para columna G)
+        start_row: Fila inicial (default: 2, para saltar encabezados)
+        end_row: Fila final (default: None, para toda la columna)
+    """
+    try:
+        if end_row is None:
+            # Obtener todas las filas para determinar el rango
+            all_values = sheet.get_all_values()
+            end_row = len(all_values) + 10  # Agregar algunas filas adicionales para futuras entradas
+        
+        # Construir el rango en notación A1 (ej: G2:G100)
+        start_cell = gspread.utils.rowcol_to_a1(start_row, column_index)
+        end_cell = gspread.utils.rowcol_to_a1(end_row, column_index)
+        range_name = f"{start_cell}:{end_cell}"
+        
+        # Crear la regla de validación para checkboxes
+        checkbox_rule = {
+            "setDataValidation": {
+                "range": {
+                    "sheetId": sheet.id,
+                    "startRowIndex": start_row - 1,  # Ajustar a 0-based index
+                    "endRowIndex": end_row,
+                    "startColumnIndex": column_index - 1,  # Ajustar a 0-based index
+                    "endColumnIndex": column_index
+                },
+                "rule": {
+                    "condition": {
+                        "type": "BOOLEAN"
+                    }
+                }
+            }
+        }
+        
+        # Aplicar la regla usando la API avanzada
+        sheet.spreadsheet.batch_update({"requests": [checkbox_rule]})
+        
+        logger.info(f"Casillas de verificación agregadas a la columna {column_index} (rango {range_name})")
+        return True
+    
+    except Exception as e:
+        logger.error(f"Error al agregar casillas de verificación: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
 
 # Actualizar la función analyze_guests_with_ai también
 def analyze_guests_with_ai(guest_list, category_info=None):
