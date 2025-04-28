@@ -2629,29 +2629,34 @@ def whatsapp_reply():
 
                                     # Añadir a la hoja específica del evento
                                     if rows_to_add:
-                                        result = event_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
-                                        added_count = result.get('updates', {}).get('updatedRows', 0)
-                                        logger.info(f"Agregados {added_count} invitados normales a '{selected_event}'")
+                                        # ---> ¡NUEVO LOG ANTES DE ENVIAR! <---
+                                        logger.info(f"DEBUG APPENDING DATA: Intentando añadir estas filas: {rows_to_add}")
+                                        # ------------------------------------
+                                        try: # Añadido try/except alrededor de append_rows
+                                            result = event_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
+                                            added_count = result.get('updates', {}).get('updatedRows', 0)
+                                            logger.info(f"Agregados {added_count} invitados normales a '{selected_event}'")
 
-                                        if added_count == len(rows_to_add) and not invalid_entries_found:
-                                             response_text = f"✅ ¡Éxito! Se anotaron *{added_count}* invitado(s) Generales para *{selected_event}*."
-                                        elif added_count > 0:
-                                             response_text = f"⚠️ Se anotaron *{added_count}* invitado(s) Generales para *{selected_event}*, pero algunos de tu lista tenían datos inválidos y fueron omitidos."
-                                        else:
-                                             # Si added_count es 0 pero invalid_entries_found era True y valid_guests_for_sheet no estaba vacío
-                                             logger.error(f"Error añadiendo filas normales a '{event_sheet.title}', API reportó 0 añadidas.")
-                                             response_text = f"❌ Hubo un error al guardar los invitados en la hoja '{selected_event}'. Intenta de nuevo."
-                                             # No resetear, permitir reintento implícito
+                                            if added_count == len(rows_to_add) and not invalid_entries_found:
+                                                response_text = f"✅ ¡Éxito! Se anotaron *{added_count}* invitado(s) Generales para *{selected_event}*."
+                                            elif added_count > 0:
+                                                response_text = f"⚠️ Se anotaron *{added_count}* invitado(s) Generales para *{selected_event}*, pero algunos de tu lista tenían datos inválidos y fueron omitidos."
+                                            else:
+                                                logger.error(f"Error añadiendo filas normales a '{event_sheet.title}', API reportó 0 añadidas.")
+                                                response_text = f"❌ Hubo un error al guardar los invitados en la hoja '{selected_event}'. Intenta de nuevo."
 
-                                        # Resetear estado SIEMPRE que se haya añadido algo o habido éxito parcial
-                                        if added_count > 0:
-                                             user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+                                            # Resetear estado SIEMPRE que se haya añadido algo o habido éxito parcial
+                                            if added_count > 0:
+                                                user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
 
+                                        except Exception as append_err: # Capturar error específico de append_rows
+                                            logger.error(f"Error DIRECTO en event_sheet.append_rows: {append_err}")
+                                            logger.error(traceback.format_exc())
+                                            response_text = f"❌ Hubo un error crítico al intentar guardar en la hoja '{selected_event}'. Contacta al administrador."
+                                            # No resetear estado para posible diagnóstico
                                     else:
-                                        # Esto pasa si valid_guests_for_sheet tenía elementos pero rows_to_add quedó vacío (error lógico?)
                                         logger.error("Error lógico: Había invitados válidos pero no se generaron filas para añadir.")
                                         response_text = "❌ Hubo un error interno al preparar los datos. Intenta de nuevo."
-                                        # Mantener estado?
 
                             except gspread.exceptions.APIError as sheet_api_err:
                                  logger.error(f"Error de API de Google Sheets al operar en '{event_sheet.title}': {sheet_api_err}")
