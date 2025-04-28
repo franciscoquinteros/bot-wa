@@ -438,6 +438,20 @@ class SheetsConnection:
             try:
                 cell_value = event_sheet.acell('A1').value
                 logger.info(f"Prueba de lectura exitosa: A1 = '{cell_value}'")
+                
+                # Verificar si la hoja tiene la columna ENVIADO, y si no, agregarla
+                headers = event_sheet.row_values(1)
+                if len(headers) < 7 or 'ENVIADO' not in headers:
+                    logger.info(f"Actualizando encabezados para incluir columna ENVIADO en '{event_name}'...")
+                    headers.append('ENVIADO') if 'ENVIADO' not in headers else None
+                    event_sheet.update('A1:G1', [headers])
+                    logger.info(f"Encabezados actualizados en hoja existente '{event_name}'")
+                    
+                    # Aplicar casillas de verificación a la columna ENVIADO
+                    try:
+                        self.add_checkboxes_to_column(event_sheet, 7)  # 7 para columna G (ENVIADO)
+                    except Exception as checkbox_err:
+                        logger.error(f"Error al aplicar casillas de verificación: {checkbox_err}")
             except Exception as read_err:
                 logger.error(f"La hoja existe pero no se puede leer: {read_err}")
             
@@ -446,14 +460,20 @@ class SheetsConnection:
             # Si no existe, crear nueva hoja
             logger.info(f"Hoja para evento '{event_name}' no encontrada. Intentando crearla...")
             try:
-                # Crear hoja con las columnas necesarias
-                new_sheet = self.spreadsheet.add_worksheet(title=event_name, rows="1", cols="6")
+                # Crear hoja con las columnas necesarias (ahora 7 en lugar de 6)
+                new_sheet = self.spreadsheet.add_worksheet(title=event_name, rows="1", cols="7")
                 logger.info(f"Hoja creada con ID: {new_sheet.id}")
                 
-                # Definir encabezados
-                expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp']
-                update_result = new_sheet.update('A1:F1', [expected_headers])
+                # Definir encabezados incluyendo la columna ENVIADO
+                expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp', "ENVIADO"]
+                update_result = new_sheet.update('A1:G1', [expected_headers])  # Cambiado a G1 para incluir 7 columnas
                 logger.info(f"Encabezados añadidos: {update_result}")
+                
+                # Aplicar casillas de verificación a la columna ENVIADO
+                try:
+                    self.add_checkboxes_to_column(new_sheet, 7)  # 7 para columna G (ENVIADO)
+                except Exception as checkbox_err:
+                    logger.error(f"Error al aplicar casillas de verificación: {checkbox_err}")
                 
                 # Verificar creación con prueba de lectura
                 try:
@@ -1179,7 +1199,7 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
         logger.info(f"Verificando objeto sheet: {sheet} - Tipo: {type(sheet)}")
         
         # --- Verificar encabezados para 6 columnas ---
-        expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp']
+        expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp', "ENVIADO"]
         try:
             headers = sheet.row_values(1)
             logger.info(f"Encabezados existentes: {headers}")
@@ -1373,6 +1393,58 @@ def extract_guest_info_from_line(line, category=None):
     
     return guest_info
 
+def add_checkboxes_to_column(sheet, column_index, start_row=2, end_row=None):
+    """
+    Agrega casillas de verificación (checkboxes) a una columna específica.
+    
+    Args:
+        sheet: Objeto de hoja de Google Sheets
+        column_index: Índice de la columna (1-based, ejemplo: 7 para columna G)
+        start_row: Fila inicial (default: 2, para saltar encabezados)
+        end_row: Fila final (default: None, para toda la columna)
+    """
+    try:
+        if end_row is None:
+            # Obtener todas las filas para determinar el rango
+            all_values = sheet.get_all_values()
+            end_row = len(all_values) + 10  # Agregar algunas filas adicionales para futuras entradas
+        
+        # Construir el rango en notación A1 (ej: G2:G100)
+        start_cell = gspread.utils.rowcol_to_a1(start_row, column_index)
+        end_cell = gspread.utils.rowcol_to_a1(end_row, column_index)
+        range_name = f"{start_cell}:{end_cell}"
+        
+        # Crear la regla de validación para checkboxes
+        checkbox_rule = {
+            "setDataValidation": {
+                "range": {
+                    "sheetId": sheet.id,
+                    "startRowIndex": start_row - 1,  # Ajustar a 0-based index
+                    "endRowIndex": end_row,
+                    "startColumnIndex": column_index - 1,  # Ajustar a 0-based index
+                    "endColumnIndex": column_index
+                },
+                "rule": {
+                    "condition": {
+                        "type": "BOOLEAN"
+                    }
+                }
+            }
+        }
+        
+        # Aplicar la regla usando la API avanzada
+        sheet.spreadsheet.batch_update({"requests": [checkbox_rule]})
+        
+        logger.info(f"Casillas de verificación agregadas a la columna {column_index} (rango {range_name})")
+        return True
+    
+    except Exception as e:
+        logger.error(f"Error al agregar casillas de verificación: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+
+
 def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn, categories=None, command_type='add_guests'):
     """
     Agrega invitados a la hoja con información estructurada, incluyendo el evento
@@ -1395,7 +1467,7 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         # --- AJUSTADO: Verificar encabezados para 6 columnas ---
-        expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp']
+        expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp', "ENVIADO"]
         try:
             headers = sheet.row_values(1)
         except gspread.exceptions.APIError as api_err:
@@ -1486,7 +1558,8 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
                 guest.get("genero", "Otro"),    # Columna C: Genero
                 pr_name,                        # Columna D: Publica (Nombre del PR o número fallback) <--- MODIFICADO
                 event_name,                     # Columna E: Evento
-                timestamp                       # Columna F: Timestamp
+                timestamp,                      # Columna F: Timestamp
+                False                           # Columna G: ENVIADO (checkbox desmarcado)
             ])
 
         # --- Agregar a la hoja ---
@@ -1958,6 +2031,38 @@ def test_sheet_write():
         return jsonify({"status": "error", "message": str(e)})
 
 
+@app.route('/setup_checkboxes', methods=['GET'])
+def setup_all_checkboxes():
+    """Configura casillas de verificación en la columna ENVIADO de todas las hojas"""
+    try:
+        sheet_conn = SheetsConnection()
+        results = {}
+        
+        # Obtener todas las hojas
+        spreadsheet = sheet_conn.get_sheet()
+        all_worksheets = spreadsheet.worksheets()
+        
+        for worksheet in all_worksheets:
+            # Agregar la columna ENVIADO si no existe
+            try:
+                headers = worksheet.row_values(1)
+                if 'ENVIADO' not in headers:
+                    headers.append('ENVIADO')
+                    worksheet.update('A1:G1', [headers])
+                
+                # Aplicar casillas de verificación
+                column_index = headers.index('ENVIADO') + 1  # Convertir índice 0-based a 1-based
+                add_checkboxes_to_column(worksheet, column_index)
+                
+                results[worksheet.title] = "Configuración exitosa"
+            except Exception as e:
+                results[worksheet.title] = f"Error: {str(e)}"
+        
+        return jsonify({"status": "complete", "results": results})
+    
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
 # --- Función whatsapp_reply COMPLETA con Lógica VIP ---
 @app.route('/whatsapp', methods=['POST'])
 def whatsapp_reply():
@@ -2286,7 +2391,7 @@ def whatsapp_reply():
                                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                     
                                     # Verificar encabezados
-                                    expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp']
+                                    expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp', "ENVIADO"]
                                     try:
                                         headers = event_sheet.row_values(1)
                                     except gspread.exceptions.APIError as api_err:
