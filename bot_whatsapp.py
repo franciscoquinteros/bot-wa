@@ -419,6 +419,42 @@ class SheetsConnection:
             logger.error(f"Error CRÍTICO inesperado al conectar con Google Sheets: {e}")
             raise
 
+    def get_sheet_by_event_name(self, event_name):
+        """
+        Obtiene o crea una hoja específica para un evento determinado.
+        
+        Args:
+            event_name (str): Nombre del evento
+            
+        Returns:
+            Objeto de hoja de Google Sheets o None si hay error
+        """
+        if not event_name:
+            logger.error("Intentando obtener hoja para evento sin nombre.")
+            return None
+            
+        try:
+            # Intentar obtener la hoja existente
+            event_sheet = self.spreadsheet.worksheet(event_name)
+            logger.info(f"Hoja para evento '{event_name}' encontrada")
+            return event_sheet
+        except gspread.exceptions.WorksheetNotFound:
+            # Si no existe, crear nueva hoja
+            logger.info(f"Hoja para evento '{event_name}' no encontrada. Intentando crearla...")
+            try:
+                # Crear hoja con las columnas necesarias
+                new_sheet = self.spreadsheet.add_worksheet(title=event_name, rows="1", cols="6")
+                # Definir encabezados
+                expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp']
+                new_sheet.update('A1:F1', [expected_headers])
+                logger.info(f"Hoja para evento '{event_name}' creada exitosamente")
+                return new_sheet
+            except Exception as e:
+                logger.error(f"Error al crear hoja para evento '{event_name}': {e}")
+                return None
+        except Exception as e:
+            logger.error(f"Error al obtener hoja para evento '{event_name}': {e}")
+            return None
      # --- NUEVO: Método para obtener mapeo Telefono VIP -> Nombre PR ---
     def get_vip_phone_pr_mapping(self):
         """
@@ -1111,76 +1147,143 @@ def extract_guests_manually_enhanced(lines, categories=None, command_type='add_g
     return extract_guests_manually(lines, categories)
 
 # Modificación a la función add_guests_to_sheet para usar el nuevo extractor
-def add_guests_to_sheet_enhanced(sheet, guests_data, phone_number, categories=None, command_type='add_guests'):
+def add_guests_to_sheet(sheet_conn, guests_data, phone_number, event_name, categories=None, command_type='add_guests'):
     """
-    Versión mejorada de add_guests_to_sheet que soporta múltiples formatos
-    
+    Agrega invitados a la hoja específica del evento con información estructurada.
+    ADAPTADO para usar hojas específicas por evento, con columnas:
+    Nombre y Apellido | Email | Genero | Publica | Evento | Timestamp
+
     Args:
-        sheet: Objeto de hoja de Google Sheets
-        guests_data: Lista de líneas con datos de invitados
-        phone_number: Número de teléfono del anfitrión
+        sheet_conn: Instancia de SheetsConnection para acceder a las hojas
+        guests_data: Lista de líneas crudas con datos de invitados
+        phone_number: Número de teléfono del anfitrión (NORMALIZADO)
+        event_name: Nombre del evento seleccionado
         categories (dict, optional): Información sobre categorías detectadas
         command_type (str): Tipo de comando detectado
-        
+
     Returns:
-        int: Número de invitados añadidos
+        int: Número de invitados añadidos (-1 si hay error de validación)
     """
     try:
+        # Obtener la hoja específica para el evento
+        event_sheet = sheet_conn.get_sheet_by_event_name(event_name)
+        if not event_sheet:
+            logger.error(f"No se pudo obtener/crear hoja para evento '{event_name}'")
+            return 0
+
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Verificar si la hoja tiene los encabezados correctos
-        headers = sheet.row_values(1)
-        if not headers or len(headers) < 5:
-            sheet.update('A1:E1', [['Nombre y Apellido', 'Email', 'Tipo de ticket', 'Responsable', 'Email de Responsable', "Nombre completo del responsable"]])
-        
-        # Procesar datos de invitados según el formato detectado
+
+        # --- Verificar encabezados ---
+        expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp']
+        try:
+            headers = event_sheet.row_values(1)
+        except gspread.exceptions.APIError as api_err:
+             if "exceeds grid limits" in str(api_err): # Hoja completamente vacía
+                headers = []
+             else:
+                 raise api_err
+
+        # Actualizar si los encabezados no coinciden o la hoja está vacía
+        if not headers or len(headers) < len(expected_headers) or headers[:len(expected_headers)] != expected_headers:
+            logger.info(f"Actualizando/Creando encabezados en la hoja '{event_sheet.title}': {expected_headers}")
+            event_sheet.update('A1:F1', [expected_headers])
+
+        # --- Procesar datos de invitados ---
         structured_guests = None
-        
-        # Primero intentar usar IA para procesar los datos (solo para formato estándar)
+
+        # Usar IA si está disponible y NO es formato split
         if command_type == 'add_guests' and OPENAI_AVAILABLE and client:
+            logger.info("Intentando análisis de invitados con OpenAI...")
             structured_guests = analyze_guests_with_ai(guests_data, categories)
-            
-        # Si la IA falla, no está disponible, o es formato dividido, usar procesamiento manual
-        if not structured_guests:
-            structured_guests = extract_guests_manually_enhanced(guests_data, categories, command_type)
-        
-        # Verificar que todos los invitados tengan email
-        has_email_mismatch = False
-        valid_guests = []
-        for guest in structured_guests:
-            if guest.get("email"):
-                valid_guests.append(guest)
+            if structured_guests:
+                 logger.info(f"OpenAI procesó {len(structured_guests)} invitados.")
             else:
-                has_email_mismatch = True
-                logger.warning(f"Invitado sin email detectado: {guest.get('nombre')} {guest.get('apellido')}")
-        
-        # Si hay problemas con emails faltantes, devolver error específico
-        if has_email_mismatch:
-            logger.error("Se detectaron invitados sin email")
+                 logger.warning("OpenAI no pudo procesar los invitados o devolvió vacío.")
+
+        # Si IA falla, no está disponible, o ES formato split, usar procesamiento manual
+        if not structured_guests:
+            if command_type == 'add_guests_split':
+                 logger.info("Usando extractor manual para formato dividido (Nombres -> Emails)...")
+            else:
+                 logger.info("Usando extractor manual para formato estándar (Nombre - Email)...")
+            structured_guests = extract_guests_manually_enhanced(guests_data, categories, command_type)
+
+        if not structured_guests: # Si la extracción manual también falló
+            logger.error("La extracción manual de invitados devolvió una lista vacía o None.")
+            return 0 # Indicar que no se añadió nada
+
+        # --- Validar invitados estructurados ---
+        valid_guests = []
+        invalid_entries_found = False
+        for guest in structured_guests:
+            # Verificar que sea diccionario y tenga email y al menos nombre
+            if isinstance(guest, dict) and guest.get("email") and guest.get("nombre"):
+                # Validar email básico
+                if re.match(r"[^@]+@[^@]+\.[^@]+", guest["email"]):
+                    valid_guests.append(guest)
+                else:
+                    logger.warning(f"Formato de email inválido: {guest.get('email')} para {guest.get('nombre')}")
+                    invalid_entries_found = True
+            else:
+                logger.warning(f"Invitado incompleto (falta email o nombre): {guest}")
+                invalid_entries_found = True
+
+        # Si se encontraron entradas inválidas, devolver error de validación
+        if invalid_entries_found:
+            logger.error("Se detectaron invitados sin email válido o nombre.")
             return -1  # Código especial para indicar error de validación
         
-        # Crear filas para añadir a la hoja
+        # --- Obtener Nombre del PR ---
+        pr_name = phone_number # Valor por defecto si no se encuentra el mapeo
+        try:
+            # Obtener el mapeo desde la instancia de conexión
+            phone_to_pr_map = sheet_conn.get_phone_pr_mapping()
+            # Buscar el nombre del PR usando el número normalizado
+            pr_name_found = phone_to_pr_map.get(phone_number)
+            if pr_name_found:
+                pr_name = pr_name_found # Usar el nombre encontrado
+                logger.info(f"Nombre PR encontrado para {phone_number}: {pr_name}")
+            else:
+                logger.warning(f"No se encontró nombre PR para {phone_number}. Se usará el número como fallback.")
+        except Exception as map_err:
+            logger.error(f"Error al obtener/buscar mapeo PR para {phone_number}: {map_err}. Se usará el número como fallback.")
+
+        # --- Crear filas para añadir a la hoja ---
         rows_to_add = []
         for guest in valid_guests:
+            full_name = f"{guest.get('nombre', '')} {guest.get('apellido', '')}".strip()
             rows_to_add.append([
-                guest.get("nombre", ""),
-                guest.get("apellido", ""),
-                guest.get("email", ""),
-                guest.get("genero", "Otro"),
-                phone_number
+                full_name,                      # Columna A: Nombre y Apellido
+                guest.get("email", ""),         # Columna B: Email
+                guest.get("genero", "Otro"),    # Columna C: Genero
+                pr_name,                        # Columna D: Publica (Nombre del PR o número fallback)
+                event_name,                     # Columna E: Evento
+                timestamp                       # Columna F: Timestamp
             ])
-        
-        # Agregar a la hoja
+
+        # --- Agregar a la hoja ---
         if rows_to_add:
-            sheet.append_rows(rows_to_add)
-            logger.info(f"Agregados {len(rows_to_add)} invitados para el teléfono {phone_number}")
-        
-        return len(rows_to_add)
+            try:
+                event_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
+                logger.info(f"Agregados {len(rows_to_add)} invitados para evento '{event_name}' por {phone_number}")
+                return len(rows_to_add)
+            except gspread.exceptions.APIError as e:
+                 logger.error(f"Error de API de Google Sheets al agregar filas: {e}")
+                 return 0 # Indicar fallo
+            except Exception as e:
+                 logger.error(f"Error inesperado en append_rows: {e}")
+                 import traceback
+                 logger.error(traceback.format_exc())
+                 return 0
+        else:
+             logger.warning("No se generaron filas válidas para añadir a la hoja.")
+             return 0
+
     except Exception as e:
-        logger.error(f"Error al agregar invitados: {e}")
+        logger.error(f"Error GRANDE en add_guests_to_sheet: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        return 0
+        return 0 # Indicar fallo genérico
 
 def extract_guests_manually(lines, categories=None):
     """
@@ -1520,17 +1623,17 @@ def parse_vip_guest_list(message_body):
     return paired_guests if paired_guests else None
     
 # MODIFICADO: Añadir sheet_conn, buscar PR name y filtrar por él.
-def get_guests_by_pr(sheet, sheet_conn, phone_number):
+def get_guests_by_pr(sheet_conn, phone_number):
     """
-    Obtiene todos los registros de invitados asociados a un número de teléfono de publicador.
+    Obtiene todos los registros de invitados asociados a un número de teléfono de publicador,
+    buscando en todas las hojas de eventos.
 
     Args:
-        sheet: Objeto de hoja de Google Sheets ('Invitados').
-        sheet_conn: Instancia de SheetsConnection para buscar el nombre PR.
-        phone_number (str): Número de teléfono NORMALIZADO del publicador.
+        sheet_conn: Instancia de SheetsConnection para acceder a las hojas
+        phone_number (str): Número de teléfono NORMALIZADO del publicador
 
     Returns:
-        list: Lista de diccionarios de invitados filtrados, o lista vacía si no se encuentra PR o no hay invitados.
+        dict: Diccionario {nombre_evento: [lista_invitados]} de invitados filtrados por evento
     """
     pr_name = None
     try:
@@ -1540,27 +1643,53 @@ def get_guests_by_pr(sheet, sheet_conn, phone_number):
 
         if not pr_name:
             logger.warning(f"No se encontró PR Name para el número {phone_number} al buscar invitados.")
-            return [] # No hay invitados si no hay PR
+            pr_name = phone_number  # Usar el número como fallback para búsqueda
 
-        # Obtener todos los registros
-        all_guests = sheet.get_all_records()
-        if not all_guests:
-            logger.warning("La hoja 'Invitados' está vacía.")
-            return []
+        # Obtener lista de eventos disponibles
+        available_events = sheet_conn.get_available_events()
+        if not available_events:
+            logger.warning("No hay eventos disponibles para buscar invitados.")
+            return {}
 
-        # Filtrar por nombre del PR
-        user_guests = [guest for guest in all_guests if guest.get('Publica') == pr_name]
-        logger.info(f"Encontrados {len(user_guests)} invitados para PR '{pr_name}' ({phone_number}).")
-        return user_guests
+        # Diccionario para almacenar invitados por evento
+        guests_by_event = {}
 
-    except gspread.exceptions.APIError as api_err:
-        logger.error(f"Error de API al leer invitados para PR '{pr_name}': {api_err}")
-        return []
+        # Buscar en cada hoja de evento
+        for event_name in available_events:
+            try:
+                # Obtener la hoja específica del evento
+                event_sheet = sheet_conn.get_sheet_by_event_name(event_name)
+                if not event_sheet:
+                    logger.warning(f"No se pudo acceder a la hoja del evento '{event_name}'.")
+                    continue
+
+                # Obtener todos los registros de la hoja
+                all_guests = event_sheet.get_all_records()
+                if not all_guests:
+                    # Si la hoja está vacía (solo tiene encabezados)
+                    logger.info(f"Hoja '{event_name}' no tiene invitados registrados.")
+                    continue
+
+                # Filtrar por nombre del PR o número de teléfono (como fallback)
+                event_guests = [guest for guest in all_guests if 
+                               guest.get('Publica') == pr_name or 
+                               guest.get('Publica') == phone_number]
+                
+                if event_guests:
+                    guests_by_event[event_name] = event_guests
+                    logger.info(f"Encontrados {len(event_guests)} invitados para PR '{pr_name}' en evento '{event_name}'.")
+                
+            except Exception as event_err:
+                logger.error(f"Error al buscar invitados en evento '{event_name}': {event_err}")
+                continue
+
+        return guests_by_event
+
     except Exception as e:
-        logger.error(f"Error inesperado al obtener invitados para PR '{pr_name}': {e}")
+        logger.error(f"Error global en get_guests_by_pr: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        return []
+        return {}
 
 def generate_per_event_response(guests_by_event, pr_name, phone_number):
     """
@@ -1857,8 +1986,7 @@ def whatsapp_reply():
 
         logger.info(f"Usuario: {sender_phone_normalized}, VIP: {is_vip}, Estado: {current_state}, EventoSel: {selected_event}, TipoInvitadoSel: {selected_guest_type}")
 
-        # Obtener referencias a las hojas (pueden ser None si falló la conexión/creación)
-        guest_sheet = sheet_conn.get_guest_sheet()
+        # Obtener referencia a la hoja de invitados VIP (sigue siendo una hoja centralizada)
         vip_guest_sheet = sheet_conn.get_vip_guest_sheet()
 
         # --- Lógica Principal de Estados ---
@@ -1881,26 +2009,19 @@ def whatsapp_reply():
                     # Guardar estado y eventos disponibles
                     user_states[sender_phone_normalized] = {'state': STATE_AWAITING_EVENT_SELECTION, 'event': None, 'available_events': available_events, 'guest_type': None} # Limpiar guest_type
             elif command_type == 'count':
-                 # Lógica de conteo por evento (como en la respuesta anterior)
+                 # Lógica de conteo por evento modificada para buscar en múltiples hojas
                  logger.info(f"Procesando comando 'count' para {sender_phone_normalized}")
-                 all_user_guests = get_guests_by_pr(guest_sheet, sheet_conn, sender_phone_normalized)
-                 guests_by_event = {}
-                 # ... (agrupación por evento) ...
-                 if all_user_guests:
-                     for guest in all_user_guests:
-                         event_name = guest.get('Evento', 'Sin Evento Asignado')
-                         if not event_name: event_name = 'Sin Evento Asignado'
-                         if event_name not in guests_by_event: guests_by_event[event_name] = []
-                         guests_by_event[event_name].append(guest)
+                 # Obtener invitados agrupados por evento directamente con la nueva función
+                 guests_by_event = get_guests_by_pr(sheet_conn, sender_phone_normalized)
+                 
                  pr_name = sender_phone_normalized # Fallback
                  try: # Obtener nombre PR para respuesta
-                     # Usar mapeo general para identificar al PR en la respuesta
                      phone_to_pr_map = sheet_conn.get_phone_pr_mapping()
                      pr_name_found = phone_to_pr_map.get(sender_phone_normalized)
                      if pr_name_found: pr_name = pr_name_found
                  except Exception as e: logger.error(f"Error buscando nombre PR para respuesta de conteo: {e}")
+                 
                  response_text = generate_per_event_response(guests_by_event, pr_name, sender_phone_normalized)
-                 # Podríamos añadir conteo VIP aquí si se desea
 
             else: # Comando inicial no reconocido
                 response_text = '¡Hola! 👋 Di "Hola" para ver eventos o pide tu "lista de invitados".'
@@ -1945,7 +2066,7 @@ def whatsapp_reply():
                 response_text = f"Responde sólo con el *número* del evento:\n\n{event_list_text}"
 
 
-        # --- NUEVO ESTADO: ESPERANDO TIPO DE INVITADO (SOLO VIPs) ---
+        # --- ESTADO: ESPERANDO TIPO DE INVITADO (SOLO VIPs) ---
         elif current_state == STATE_AWAITING_GUEST_TYPE:
             choice_lower = incoming_msg.lower()
             if choice_lower == 'vip':
@@ -1969,9 +2090,7 @@ def whatsapp_reply():
                     "(Escribe 'cancelar' para volver)."
                  )
                 user_states[sender_phone_normalized] = user_status
-            # ... (resto del elif para 'normal' sin cambios) ...
             elif choice_lower == 'normal' or choice_lower == 'normales':
-                 # ... (instrucciones normales) ...
                  logger.info(f"Usuario VIP {sender_phone_normalized} eligió añadir tipo Normal.")
                  user_status['state'] = STATE_AWAITING_GUEST_DATA
                  user_status['guest_type'] = 'Normal'
@@ -2015,7 +2134,6 @@ def whatsapp_reply():
                                               "Nombres (uno por línea)\n[Línea Vacía]\nEmails (uno por línea)\n\n"
                                               "La cantidad de nombres y emails debe coincidir.")
                              # Mantener estado para reintento (no resetear user_states)
-                             # user_states[sender_phone_normalized]['state'] = STATE_AWAITING_GUEST_DATA # Ya está en este estado
                         else: # El parser devolvió una lista de diccionarios válida
                              # Obtener nombre del PR VIP (desde hoja VIP)
                              vip_pr_name = sender_phone_normalized # Fallback
@@ -2050,32 +2168,32 @@ def whatsapp_reply():
 
                 elif selected_guest_type == 'Normal' or selected_guest_type is None: # Tratar None como Normal
                     logger.info(f"Procesando datos Normales para {sender_phone_normalized}")
-                    if not guest_sheet:
-                         logger.error(f"Hoja 'Invitados' no disponible.")
-                         response_text = "❌ Hubo un error interno (hoja Invitados no accesible)."
-                         user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None} # Resetear
-                    else:
-                        # Lógica anterior para parsear y añadir normales
-                        parsed = parse_message_enhanced(incoming_msg)
-                        command_type = parsed['command_type']
-                        data_lines = parsed['data']
-                        categories = parsed['categories']
-                        if command_type in ['add_guests', 'add_guests_split'] and data_lines:
-                            # Llamada a función existente add_guests_to_sheet
-                            added_count = add_guests_to_sheet(
-                                guest_sheet, data_lines, sender_phone_normalized,
-                                selected_event, sheet_conn, categories, command_type
-                            )
-                            if added_count > 0:
-                                response_text = f"✅ ¡Listo! Se anotaron *{added_count}* invitados normales para *{selected_event}*."
-                                user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None} # Resetear
-                            elif added_count == 0: response_text = f"⚠️ No pude anotar invitados normales. Revisa el formato."
-                            elif added_count == -1: response_text = f"⚠️ Faltan emails normales o no son válidos. Revisa."
-                            else:
-                                response_text = "❌ Hubo un error al guardar invitados normales."
-                                user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None} # Resetear
-                        else: # Mensaje no reconocido como lista normal
-                             response_text = (f"Espero la lista normal para *{selected_event}* (Nombres->Emails).\nO 'cancelar'.")
+                    
+                    # Lógica modificada para usar hojas específicas por evento
+                    parsed = parse_message_enhanced(incoming_msg)
+                    command_type = parsed['command_type']
+                    data_lines = parsed['data']
+                    categories = parsed['categories']
+                    
+                    if command_type in ['add_guests', 'add_guests_split'] and data_lines:
+                        # Usar la nueva función que trabaja con hojas por evento
+                        added_count = add_guests_to_sheet(
+                            sheet_conn, data_lines, sender_phone_normalized,
+                            selected_event, categories, command_type
+                        )
+                        
+                        if added_count > 0:
+                            response_text = f"✅ ¡Listo! Se anotaron *{added_count}* invitados normales para *{selected_event}*."
+                            user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None} # Resetear
+                        elif added_count == 0: 
+                            response_text = f"⚠️ No pude anotar invitados normales. Revisa el formato."
+                        elif added_count == -1: 
+                            response_text = f"⚠️ Faltan emails normales o no son válidos. Revisa."
+                        else:
+                            response_text = "❌ Hubo un error al guardar invitados normales."
+                            user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None} # Resetear
+                    else: # Mensaje no reconocido como lista normal
+                         response_text = (f"Espero la lista normal para *{selected_event}* (Nombres->Emails).\nO 'cancelar'.")
                 else: # Tipo de invitado desconocido
                      logger.error(f"Estado AWAITING_GUEST_DATA con guest_type inválido: {selected_guest_type}")
                      response_text = "Hubo un error con tu selección. Empieza de nuevo ('Hola')."
@@ -2096,7 +2214,6 @@ def whatsapp_reply():
              logger.warning("No se generó texto de respuesta para enviar.")
              return jsonify({"status": "processed_no_reply"}), 200
 
-    # ... (Manejo de excepción general) ...
     except Exception as e:
         logger.error(f"Error inesperado GRANDE en el webhook: {e}")
         import traceback
