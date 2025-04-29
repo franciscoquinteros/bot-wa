@@ -2374,17 +2374,17 @@ Puedo ayudarte con la administración de tu lista de invitados. Aquí tienes lo 
                               response_text = (
                                   f"Perfecto, evento seleccionado: *{selected_event}*.\n\n"
                                   "Ahora envíame la lista en formato Nombres primero, luego una línea vacía, y luego los Emails.\n\n"
-                                  "Ejemplo:\n"
+                                  "Ejemplo:\n\n"
                                   "Hombres: \n"
-                                  "Juan Perez\n"
-                                  "Carlos Lopez\n\n" # Línea vacía separadora
-                                  "juan@ejemplo.com\n"
-                                  "carlos@ejemplo.com\n\n"
+                                  "Nombre Apellido\n"
+                                  "Nombre Apellido\n\n" # Línea vacía separadora
+                                  "email1@ejemplo.com\n"
+                                  "email2@ejemplo.com\n\n"
                                   "Mujeres: \n"
-                                  "Maria Garcia\n"
-                                  "Ana Rodriguez\n\n" # Línea vacía separadora
-                                  "maria@ejemplo.com\n"
-                                  "ana@ejemplo.com\n\n"
+                                  "Nombre Apellido\n"
+                                  "Nombre Apellido\n\n" # Línea vacía separadora
+                                  "email1@ejemplo.com\n"
+                                  "email2@ejemplo.com\n\n"
                                   "⚠️ La cantidad de nombres y emails debe coincidir.\n"
                                   "Escribe 'cancelar' si quieres cambiar de evento."
                               )
