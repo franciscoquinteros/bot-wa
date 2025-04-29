@@ -2377,13 +2377,18 @@ def whatsapp_reply():
                              # Usuario no VIP, ir directo a pedir datos normales
                              response_text = (
                                  f"Perfecto, evento seleccionado: *{selected_event}*.\n\n"
-                                 "Ahora envíame tu lista de invitados *Generales*.\n"
-                                 "Formato: Nombres primero, luego emails, separados por una línea vacía.\n\n"
+                                 "Ahora envíame la lista (Nombres primero, luego Emails)\n\n"
                                  "Ejemplo:\n"
-                                 "Juan Perez\n"
-                                 "Maria Garcia\n\n" # Línea vacía separadora
-                                 "juan.p@ejemplo.com\n"
-                                 "maria.g@ejemplo.com\n\n"
+                                 "Hombres: \n"
+                                 "Nombre Apellido\n"
+                                 "Nombre Apellido\n\n"
+                                 "email1@ejemplo.com\n"
+                                 "email2@ejemplo.com\n\n"
+                                 "Mujeres: \n"
+                                 "Nombre Apellido\n"
+                                 "Nombre Apellido\n\n"
+                                 "email1@ejemplo.com\n"
+                                 "email2@ejemplo.com\n\n"
                                  "⚠️ La cantidad de nombres y emails debe coincidir.\n"
                                  "Escribe 'cancelar' si quieres cambiar de evento."
                              )
