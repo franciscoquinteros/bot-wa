@@ -1126,13 +1126,7 @@ def parse_message(message):
         r'(?i)^buen día$'
     ]
     
-    for pattern in saludo_patterns:
-        if re.search(pattern, message):
-            return {
-                'command_type': 'saludo',
-                'data': None,
-                'categories': None
-            }
+    
     
     # Verificar si es una consulta de conteo
     count_patterns = [
@@ -1204,8 +1198,8 @@ def parse_message(message):
 
 def parse_message_enhanced(message):
     """
-    Versión mejorada de parse_message que detecta mejor el formato dividido
-    de nombres y emails en líneas separadas
+    Versión simplificada que solo detecta comandos específicos (count/help)
+    y trata todo lo demás como mensaje genérico
     
     Args:
         message (str): Mensaje del usuario
@@ -1213,57 +1207,51 @@ def parse_message_enhanced(message):
     Returns:
         dict: Información sobre el comando, datos y categorías detectadas
     """
-    # Comprobar primero si es un saludo
-    saludo_patterns = [
-        r'(?i)^hola$',
-        r'(?i)^buenos días$',
-        r'(?i)^buenas tardes$',
-        r'(?i)^buenas noches$',
-        r'(?i)^saludos$',
-        r'(?i)^hi$',
-        r'(?i)^hey$',
-        r'(?i)^hello$',
-        r'(?i)^ola$',
-        r'(?i)^buen día$'
+    # Comprobar comandos específicos que deben ser tratados aparte
+    
+    # Verificar si es una consulta de conteo
+    count_patterns = [
+        r'cu[aá]ntos invitados',
+        r'contar invitados',
+        r'total de invitados',
+        r'invitados totales',
+        r'lista de invitados'
     ]
     
-    for pattern in saludo_patterns:
-        if re.search(pattern, message.strip()):
+    for pattern in count_patterns:
+        if re.search(pattern, message.lower()):
             return {
-                'command_type': 'saludo',
+                'command_type': 'count',
                 'data': None,
                 'categories': None
             }
     
-    # Comprobación especial para formato separado antes de otras lógicas
+    # Verificar si es una solicitud de ayuda
+    help_patterns = [
+        r'^ayuda$',
+        r'^help$',
+        r'c[oó]mo funciona',
+        r'c[oó]mo usar'
+    ]
+    
+    for pattern in help_patterns:
+        if re.search(pattern, message.lower()):
+            return {
+                'command_type': 'help',
+                'data': None,
+                'categories': None
+            }
+    
+    # Cualquier otro mensaje se trata como genérico para mostrar eventos
+    # (incluidos saludos, texto aleatorio, emojis, etc.)
     lines = message.strip().split('\n')
-    # Filtrar líneas vacías
     valid_lines = [line.strip() for line in lines if line.strip()]
     
-    # Si tenemos suficientes líneas para analizar
-    if len(valid_lines) >= 4:  # Al menos algunos nombres y algunos emails
-        # Contar emails y no-emails
-        emails = [line for line in valid_lines if '@' in line and '.' in line.split('@')[1]]
-        non_emails = [line for line in valid_lines if '@' not in line]
-        
-        # Detectar patrón: primero nombres, luego emails (con línea vacía opcional entre ellos)
-        if (len(emails) >= 1 and len(non_emails) >= 1 and 
-            abs(len(emails) - len(non_emails)) <= 2):  # Permitir pequeñas diferencias
-            
-            # Verificar que los emails están agrupados (no mezclados con nombres)
-            email_indices = [i for i, line in enumerate(valid_lines) if '@' in line]
-            if email_indices and max(email_indices) - min(email_indices) < len(emails):
-                # Los emails están agrupados, es probable que sea formato dividido
-                logger.info(f"Detectado formato dividido: {len(non_emails)} nombres, {len(emails)} emails")
-                
-                return {
-                    'command_type': 'add_guests_split',
-                    'data': valid_lines,
-                    'categories': None
-                }
-    
-    # Si no se detectó formato dividido, usar el parse_message original
-    return parse_message(message)
+    return {
+        'command_type': 'generic_message',
+        'data': valid_lines if valid_lines else [message.strip()],
+        'categories': None
+    }
 
 def extract_guests_manually_enhanced(lines, categories=None, command_type='add_guests'):
     """
@@ -2189,109 +2177,74 @@ def whatsapp_reply():
     sender_phone_normalized = None
     sheet_conn = None
     is_vip = False # Variable para saber si el usuario es VIP
-    # error_info = None # CORREGIDO: Se inicializa localmente donde se usa
+    error_info_parsing = None # Inicializar aquí para usar en STATE_AWAITING_GUEST_DATA
+
 
     try:
         data = request.form.to_dict()
-        logger.info(f"Datos recibidos: {data}")
+        # logger.info(f"Datos recibidos (crudos): {data}") # Demasiado detallado, loggear solo lo necesario
         sender_phone_raw = data.get('From')
         incoming_msg = data.get('Body', '').strip()
+        # incoming_msg_lower = incoming_msg.lower() # Opcional: usar versión lower si hay muchos checks case-insensitive
+
 
         if not incoming_msg or not sender_phone_raw:
-            logger.error("Payload inválido: falta 'Body' o 'From'")
-            return jsonify({"status": "error", "message": "Invalid payload"}), 400
+            logger.warning("Payload inválido o mensaje vacío: falta 'Body' o 'From'")
+            # No responder a mensajes vacíos
+            return jsonify({"status": "ignored", "message": "Empty message or invalid payload"}), 200 # Retornar 200 OK for empty messages
+
 
         sender_phone_normalized = re.sub(r'\D', '', sender_phone_raw) # Normalizar número (quitar 'whatsapp:', '+', etc.)
         sheet_conn = SheetsConnection() # Obtener instancia
 
         # --- Validación de número autorizado GENERAL ---
         authorized_phones = sheet_conn.get_authorized_phones()
+        # Primero verificar si authorized_phones se cargó correctamente
+        if authorized_phones is None: # get_authorized_phones podría devolver None en caso de error CRÍTICO
+             logger.critical("La lista de números autorizados es None. No se puede procesar.")
+             # Devuelve un error 503 para que Twilio reintente, pero no envíes mensaje al usuario.
+             return jsonify({"status": "ignored", "message": "Authorization list unavailable (critical error)"}), 503
+
         if not authorized_phones:
-            logger.critical("No hay números autorizados cargados. Bloqueando.")
-            # Considera no retornar 200 OK si la lista es vital y no carga
-            return jsonify({"status": "ignored", "message": "Authorization list unavailable"}), 503 # Service Unavailable podría ser mejor
+            # Esto ocurre si la hoja 'Telefonos' está vacía o solo tiene encabezados.
+            logger.critical("La lista de números autorizados está vacía. Bloqueando todos los mensajes entrantes.")
+            # Devuelve un error 503 para que Twilio reintente, pero no envíes mensaje al usuario.
+            return jsonify({"status": "ignored", "message": "Authorization list is empty"}), 503
+
 
         if sender_phone_normalized not in authorized_phones:
             logger.warning(f"Mensaje de número NO AUTORIZADO: {sender_phone_raw} ({sender_phone_normalized}). Ignorando.")
+            # Responder con un mensaje de "no autorizado" si quieres, o simplemente ignorar.
+            # Ignorar es más seguro si no quieres exponer la existencia del bot a números no listados.
+            # Si decides responder, hazlo AQUÍ y luego return 200.
+            # response_text = "Lo siento, tu número no está autorizado para usar este servicio."
+            # send_twilio_message(sender_phone_raw, response_text)
             return jsonify({"status": "ignored", "message": "Unauthorized number"}), 200 # OK para Twilio, pero ignoramos
+
         logger.info(f"Mensaje recibido de número AUTORIZADO: {sender_phone_raw} ({sender_phone_normalized})")
-        # --- FIN Validación General ---
+        # --- Fin Validación General ---
 
         # --- Chequeo VIP ---
         try:
-            # Asegúrate que get_vip_phones devuelva un set para eficiencia
+            # Asegúrate que get_vip_phones devuelva un set o None
             vip_phones = sheet_conn.get_vip_phones()
             if vip_phones is not None and sender_phone_normalized in vip_phones:
                  is_vip = True
         except Exception as vip_err:
-             logger.error(f"Error al verificar estado VIP para {sender_phone_normalized}: {vip_err}")
+            logger.error(f"Error al verificar estado VIP para {sender_phone_normalized}: {vip_err}")
         logger.info(f"Usuario {sender_phone_normalized} es VIP: {is_vip}")
         # --- Fin Chequeo VIP ---
 
-        # --- VERIFICAR SI ES UN SALUDO PARA REINICIAR EL FLUJO ---
-        # Lista de patrones de saludo (compilados para eficiencia si son muchos)
-        saludo_patterns = [
-            re.compile(r'^hola$', re.IGNORECASE),
-            re.compile(r'^buenos días$', re.IGNORECASE),
-            re.compile(r'^buenas tardes$', re.IGNORECASE),
-            re.compile(r'^buenas noches$', re.IGNORECASE),
-            re.compile(r'^saludos$', re.IGNORECASE),
-            re.compile(r'^hi$', re.IGNORECASE),
-            re.compile(r'^hey$', re.IGNORECASE),
-            re.compile(r'^hello$', re.IGNORECASE),
-            re.compile(r'^ola$', re.IGNORECASE),
-            re.compile(r'^buen día$', re.IGNORECASE)
-        ]
-
-        # Verificar si el mensaje es un saludo
-        is_greeting = False
-        for pattern in saludo_patterns:
-            if pattern.match(incoming_msg): # Usar match para inicio de línea
-                is_greeting = True
-                break
-
-        # Si es un saludo, reiniciar el flujo sin importar el estado actual
-        if is_greeting:
-            logger.info(f"Saludo detectado. Reiniciando flujo para {sender_phone_normalized}")
-            available_events = sheet_conn.get_available_events()
-            if not available_events:
-                response_text = "¡Hola! 👋 No encontré eventos disponibles en este momento."
-                # Resetear estado aunque no haya eventos, para que no quede 'colgado'
-                user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'available_events': [], 'guest_type': None}
-            else:
-                event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
-                base_response_text = f"¡Hola! 👋 Eventos disponibles:\n\n{event_list_text}\n\nResponde con el *número* del evento que deseas gestionar."
-                if is_vip:
-                    vip_message = "\n\n✨ *Nota: Como PR VIP, tienes acceso especial.*"
-                    response_text = base_response_text + vip_message
-                else:
-                    response_text = base_response_text
-                # Guardar estado y eventos disponibles
-                user_states[sender_phone_normalized] = {'state': STATE_AWAITING_EVENT_SELECTION, 'event': None, 'available_events': available_events, 'guest_type': None}
-
-            # Enviar la respuesta y finalizar la ejecución para el saludo
-            if response_text:
-                if not send_twilio_message(sender_phone_raw, response_text):
-                    logger.error(f"Fallo al enviar mensaje de respuesta de saludo a {sender_phone_raw}")
-                    # OK para Twilio, pero loggeamos el error de envío
-                    return jsonify({"status": "processed_with_send_error"}), 200
-                else:
-                    logger.info(f"Respuesta a saludo enviada a {sender_phone_raw}")
-                    return jsonify({"status": "success"}), 200
-            else:
-                # Esto no debería pasar si available_events es None o tiene elementos
-                logger.error("No se generó texto de respuesta para el saludo, ¡esto es inesperado!")
-                return jsonify({"status": "processed_no_reply"}), 200
-
-        # --- FIN MANEJO DE SALUDO ---
-
-        # --- Obtener estado actual y datos relevantes del usuario (si no fue saludo) ---
-        user_status = user_states.get(sender_phone_normalized, {}) # Usar dict vacío si no existe
-        current_state = user_status.get('state', STATE_INITIAL) # Default a INITIAL si no hay estado
+        # --- Obtener estado actual y datos relevantes del usuario ---
+        # Si el número no está en user_states, .get() devuelve {}, y .get('state', STATE_INITIAL) será STATE_INITIAL.
+        # Esto maneja automáticamente la primera interacción.
+        user_status = user_states.get(sender_phone_normalized, {})
+        current_state = user_status.get('state', STATE_INITIAL)
         selected_event = user_status.get('event')
         selected_guest_type = user_status.get('guest_type')
-        # Recuperar eventos si existen en el estado, crucial para AWAITING_EVENT_SELECTION
-        available_events = user_status.get('available_events', [])
+        # Recuperar eventos disponibles si estaban guardados en el estado (para STATE_AWAITING_EVENT_SELECTION)
+        available_events = user_status.get('available_events', []) # Asegurarse que siempre es una lista
+
 
         logger.info(f"Usuario: {sender_phone_normalized}, VIP: {is_vip}, Estado: {current_state}, EventoSel: {selected_event}, TipoInvitadoSel: {selected_guest_type}, EventosEnEstado: {len(available_events)}")
 
@@ -2303,385 +2256,464 @@ def whatsapp_reply():
         # --- Lógica Principal de Estados ---
         # ====================================
 
+        # MODIFICACIÓN: En STATE_INITIAL, CUALQUIER mensaje (que no sea count o help)
+        # desencadena la lista de eventos.
         if current_state == STATE_INITIAL:
-            # En estado inicial, esperamos saludo (ya manejado arriba) o comando 'count'/'lista'
-            parsed_command = parse_message_enhanced(incoming_msg) # Re-parsear por si acaso
+            logger.info(f"Procesando mensaje en STATE_INITIAL para {sender_phone_normalized}")
+            parsed_command = parse_message_enhanced(incoming_msg)
             command_type = parsed_command['command_type']
+            logger.info(f"Comando parseado en INITIAL: '{command_type}'")
 
-            # Nota: El saludo ya se manejó y reinició el estado, no debería llegar aquí como 'saludo'
-            # Si llega, es un flujo inesperado, pero podemos manejarlo como el saludo inicial.
-            if command_type == 'saludo':
-                 # Redirigir a la lógica de saludo (copiada/refactorizada)
-                 logger.warning(f"Flujo inesperado: Comando 'saludo' recibido en STATE_INITIAL post-chequeo inicial. Reiniciando de nuevo.")
-                 available_events = sheet_conn.get_available_events()
-                 if not available_events:
-                     response_text = "¡Hola de nuevo! 👋 No encontré eventos disponibles."
-                     user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'available_events': [], 'guest_type': None}
-                 else:
-                     event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
-                     base_response_text = f"¡Hola de nuevo! 👋 Eventos disponibles:\n\n{event_list_text}\n\nResponde con el *número* del evento."
-                     if is_vip: response_text = base_response_text + "\n\n✨ *Opciones VIP disponibles.*"
-                     else: response_text = base_response_text
-                     user_states[sender_phone_normalized] = {'state': STATE_AWAITING_EVENT_SELECTION, 'event': None, 'available_events': available_events, 'guest_type': None}
-
-            elif command_type == 'count':
-                # Lógica de conteo
-                logger.info(f"Procesando comando 'count' para {sender_phone_normalized}")
+            # Mantener el comando 'count' para ver la lista actual
+            if command_type == 'count':
+                logger.info(f"Comando 'count' detectado.")
                 guests_by_event = get_guests_by_pr(sheet_conn, sender_phone_normalized)
 
-                pr_name = sender_phone_normalized # Fallback
+                # Obtener el nombre del PR (usando mapeo General o VIP según corresponda) para la respuesta
+                pr_name_display = sender_phone_normalized # Fallback
                 try:
-                    # Usar mapeo general O VIP según corresponda para mostrar el nombre correcto
                     pr_map = sheet_conn.get_vip_phone_pr_mapping() if is_vip else sheet_conn.get_phone_pr_mapping()
                     if pr_map:
                          pr_name_found = pr_map.get(sender_phone_normalized)
-                         if pr_name_found: pr_name = pr_name_found
+                         if pr_name_found: pr_name_display = pr_name_found
+                         else: logger.warning(f"No se encontró nombre PR ({'VIP' if is_vip else 'General'}) mapeado para {sender_phone_normalized} para respuesta de conteo.")
+                    else:
+                         logger.warning(f"Mapeo PR ({'VIP' if is_vip else 'General'}) no disponible para respuesta de conteo.")
                 except Exception as e:
-                     logger.error(f"Error buscando nombre PR ({'VIP' if is_vip else 'General'}) para respuesta de conteo: {e}")
+                     logger.error(f"Error buscando nombre PR para respuesta de conteo: {e}")
 
-                response_text = generate_per_event_response(guests_by_event, pr_name, sender_phone_normalized)
-                # Mantener estado INITIAL después de contar
-                user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Limpiar eventos también
+                response_text = generate_per_event_response(guests_by_event, pr_name_display, sender_phone_normalized)
 
-
-            else: # Comando inicial no reconocido
-                response_text = '¡Hola! 👋 Para ver los eventos disponibles di "Hola". Para ver tu lista actual, di "Lista".'
-                if is_vip: response_text += "\n(Tienes opciones VIP disponibles)"
-                # Mantener estado inicial
+                # Mantener estado INITIAL después de mostrar el conteo
                 user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+
+
+            # Manejar el comando 'help'
+            elif command_type == 'help':
+                 logger.info(f"Comando 'help' detectado.")
+                 welcome_text = """👋 ¡Hola! Bienvenido al sistema de gestión de invitados. 
+
+Puedo ayudarte con la administración de tu lista de invitados. Aquí tienes lo que puedes hacer:
+
+1️⃣ *Agregar invitados*: 
+   Envía cualquier mensaje (excepto 'lista' o 'ayuda') para ver los eventos disponibles, elige uno, y luego sigue las instrucciones para enviar la lista en el formato Nombres -> Emails.
+
+2️⃣ *Consultar invitados*:
+   • Escribe "cuántos invitados" o "lista de invitados" para ver tu total por evento.
+
+3️⃣ *Ayuda*:
+   • Escribe "ayuda" para ver estas instrucciones de nuevo.
+   • Si estás en medio de una operación, escribe "cancelar" para empezar de nuevo.
+
+¿En qué puedo ayudarte hoy?""" # Mensaje de ayuda actualizado
+                 response_text = welcome_text
+                 # Mantener estado INITIAL después de la ayuda
+                 user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+
+
+            # ESTA ES LA RAMA CLAVE: Cualquier otro comando o texto en STATE_INITIAL
+            # (incluyendo 'saludo' si no fue match exacto al inicio, 'unknown', 'add_guests_split', etc.)
+            # ahora inicia el flujo de selección de evento.
+            else:
+                logger.info(f"Mensaje genérico o no específico recibido. Iniciando flujo de selección de evento.")
+                available_events = sheet_conn.get_available_events()
+                if not available_events:
+                    response_text = "¡Hola! 👋 No encontré eventos disponibles en este momento."
+                    # Mantener estado INITIAL si no hay eventos
+                    user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'available_events': [], 'guest_type': None}
+                else:
+                    event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
+                    base_response_text = f"¡Hola! 👋 Eventos disponibles:\n\n{event_list_text}\n\nResponde con el *número* del evento que deseas gestionar."
+                    if is_vip:
+                        vip_message = "\n\n✨ *Nota: Como PR VIP, tienes acceso especial.*"
+                        response_text = base_response_text + vip_message
+                    else:
+                        response_text = base_response_text
+
+                    # Transición a estado de espera de selección de evento
+                    user_status['state'] = STATE_AWAITING_EVENT_SELECTION
+                    user_status['event'] = None # Asegurar que no hay evento seleccionado previo
+                    user_status['available_events'] = available_events # Almacenar para el siguiente paso
+                    user_status['guest_type'] = None # Resetear tipo de invitado
+                    user_states[sender_phone_normalized] = user_status # Actualizar estado en memoria global
+
 
         # --- Estado: Esperando Selección de Evento ---
         elif current_state == STATE_AWAITING_EVENT_SELECTION:
-            if not available_events: # Seguridad: si no hay eventos en estado, no se puede elegir
-                 logger.error(f"Usuario {sender_phone_normalized} en AWAITING_EVENT_SELECTION pero sin eventos disponibles en estado. Reiniciando.")
-                 response_text = "Hubo un problema, no recuerdo los eventos. Por favor, di 'Hola' de nuevo."
+             logger.info(f"Procesando mensaje en STATE_AWAITING_EVENT_SELECTION para {sender_phone_normalized}")
+             # Debe haber eventos disponibles guardados en el estado para que esto funcione
+             if not available_events:
+                 logger.error(f"Usuario {sender_phone_normalized} en AWAITING_EVENT_SELECTION pero sin eventos disponibles guardados. Reiniciando a INITIAL.")
+                 response_text = "Hubo un problema, no recuerdo los eventos. Por favor, envía cualquier mensaje para empezar de nuevo."
                  user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
-            else:
-                 try:
-                     choice_index = int(incoming_msg) - 1 # Convertir a índice 0-based
-                     if 0 <= choice_index < len(available_events):
-                         selected_event = available_events[choice_index]
-                         logger.info(f"Usuario {sender_phone_normalized} seleccionó evento: {selected_event}")
+             # Permitir "cancelar" en este estado
+             elif incoming_msg.lower() in ["cancelar", "salir", "cancel", "exit"]:
+                 logger.info(f"Usuario {sender_phone_normalized} canceló la selección de evento.")
+                 response_text = "Selección cancelada. Puedes enviar cualquier mensaje para ver los eventos disponibles de nuevo."
+                 user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Resetear
+             else:
+                  try:
+                      choice_index = int(incoming_msg) - 1 # Convertir a índice 0-based
+                      if 0 <= choice_index < len(available_events):
+                          selected_event = available_events[choice_index]
+                          logger.info(f"Usuario {sender_phone_normalized} seleccionó evento: {selected_event}")
 
-                         # Guardar el evento seleccionado y actualizar estado
-                         user_status['event'] = selected_event
+                          # Guardar el evento seleccionado y actualizar estado
+                          user_status['event'] = selected_event
+                          # Ya no necesitamos available_events en el siguiente estado, limpiamos.
+                          user_status['available_events'] = []
 
-                         if is_vip:
-                             # Preguntar tipo de invitado (VIP o Normal)
-                             response_text = f"Evento *{selected_event}* seleccionado. ✨\n¿Quieres añadir invitados *Generales* (normales) o *VIP*? Responde 'Normal' o 'VIP'."
-                             user_status['state'] = STATE_AWAITING_GUEST_TYPE
-                             # Mantener available_events por si cancela y vuelve a este punto? O limpiar? Limpiemos por ahora.
-                             # user_status['available_events'] = [] # Opcional: limpiar para evitar confusión
-                             user_states[sender_phone_normalized] = user_status # Actualizar estado en memoria global
-                         else:
-                             # Usuario no VIP, ir directo a pedir datos normales
-                             response_text = (
-                                 f"Perfecto, evento seleccionado: *{selected_event}*.\n\n"
-                                 "Ahora envíame la lista (Nombres primero, luego Emails)\n\n"
-                                 "Ejemplo:\n"
-                                 "Hombres: \n"
-                                 "Nombre Apellido\n"
-                                 "Nombre Apellido\n\n"
-                                 "email1@ejemplo.com\n"
-                                 "email2@ejemplo.com\n\n"
-                                 "Mujeres: \n"
-                                 "Nombre Apellido\n"
-                                 "Nombre Apellido\n\n"
-                                 "email1@ejemplo.com\n"
-                                 "email2@ejemplo.com\n\n"
-                                 "⚠️ La cantidad de nombres y emails debe coincidir.\n"
-                                 "Escribe 'cancelar' si quieres cambiar de evento."
-                             )
-                             user_status['state'] = STATE_AWAITING_GUEST_DATA
-                             user_status['guest_type'] = 'Normal' # Guardar tipo por defecto
-                             # user_status['available_events'] = [] # Opcional: limpiar
-                             user_states[sender_phone_normalized] = user_status # Actualizar estado
-                     else: # Número fuera de rango
-                         event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
-                         response_text = f"❌ Número '{incoming_msg}' fuera de rango. Por favor, elige un número válido de la lista:\n\n{event_list_text}"
-                         # Mantener estado AWAITING_EVENT_SELECTION
-                 except ValueError: # No envió un número
-                     event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
-                     response_text = f"Por favor, responde sólo con el *número* del evento que quieres gestionar:\n\n{event_list_text}"
-                     # Mantener estado AWAITING_EVENT_SELECTION
+                          if is_vip:
+                              # Preguntar tipo de invitado (VIP o Normal)
+                              response_text = f"Evento *{selected_event}* seleccionado. ✨\n¿Quieres añadir invitados *Generales* (normales) o *VIP*? Responde 'Normal' o 'VIP'."
+                              user_status['state'] = STATE_AWAITING_GUEST_TYPE
+                              user_status['guest_type'] = None # Limpiar por siaca
+                              user_states[sender_phone_normalized] = user_status # Actualizar estado en memoria global
+                          else:
+                              # Usuario no VIP, ir directo a pedir datos normales
+                              response_text = (
+                                  f"Perfecto, evento seleccionado: *{selected_event}*.\n\n"
+                                  "Ahora envíame la lista en formato Nombres primero, luego una línea vacía, y luego los Emails.\n\n"
+                                  "Ejemplo:\n"
+                                  "Hombres: \n"
+                                  "Juan Perez\n"
+                                  "Carlos Lopez\n\n" # Línea vacía separadora
+                                  "juan@ejemplo.com\n"
+                                  "carlos@ejemplo.com\n\n"
+                                  "Mujeres: \n"
+                                  "Maria Garcia\n"
+                                  "Ana Rodriguez\n\n" # Línea vacía separadora
+                                  "maria@ejemplo.com\n"
+                                  "ana@ejemplo.com\n\n"
+                                  "⚠️ La cantidad de nombres y emails debe coincidir.\n"
+                                  "Escribe 'cancelar' si quieres cambiar de evento."
+                              )
+                              user_status['state'] = STATE_AWAITING_GUEST_DATA
+                              user_status['guest_type'] = 'Normal' # Guardar tipo por defecto
+                              user_states[sender_phone_normalized] = user_status # Actualizar estado
+                      else: # Número fuera de rango
+                          event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
+                          response_text = f"❌ Número '{incoming_msg}' fuera de rango. Por favor, elige un número válido de la lista:\n\n{event_list_text}"
+                          # Mantener estado AWAITING_EVENT_SELECTION
+                  except ValueError: # No envió un número válido y no fue "cancelar"
+                      event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
+                      response_text = f"Por favor, responde sólo con el *número* del evento que quieres gestionar:\n\n{event_list_text}"
+                      # Mantener estado AWAITING_EVENT_SELECTION
+
 
         # --- ESTADO: ESPERANDO TIPO DE INVITADO (SOLO VIPs) ---
         elif current_state == STATE_AWAITING_GUEST_TYPE:
-            # Este estado solo es alcanzable por VIPs que ya seleccionaron evento
-            if not selected_event: # Seguridad
-                 logger.error(f"Usuario VIP {sender_phone_normalized} en AWAITING_GUEST_TYPE sin evento seleccionado. Reiniciando.")
-                 response_text = "Hubo un problema, no recuerdo el evento. Por favor, di 'Hola' de nuevo."
+             logger.info(f"Procesando mensaje en STATE_AWAITING_GUEST_TYPE para {sender_phone_normalized}")
+             # Este estado solo es alcanzable por VIPs que ya seleccionaron evento. Debe haber un evento seleccionado.
+             if not selected_event:
+                 logger.error(f"Usuario VIP {sender_phone_normalized} en AWAITING_GUEST_TYPE sin evento seleccionado guardado. Reiniciando a INITIAL.")
+                 response_text = "Hubo un problema, no recuerdo el evento. Por favor, envía cualquier mensaje para empezar de nuevo."
                  user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
-            else:
-                 choice_lower = incoming_msg.lower()
-                 if choice_lower == 'vip':
-                     logger.info(f"Usuario VIP {sender_phone_normalized} eligió añadir tipo VIP para evento {selected_event}.")
-                     user_status['state'] = STATE_AWAITING_GUEST_DATA
-                     user_status['guest_type'] = 'VIP'
-                     response_text = (
-                         f"Ok, vas a añadir invitados *VIP* para *{selected_event}*.\n\n"
-                         "Envíame la lista en formato Nombres -> Emails:\n\n"
-                         "Ejemplo:\n"
-                         "Carlos VIP\n"
-                         "Ana VIP\n\n" # Línea vacía separadora
-                         "carlos.vip@mail.com\n"
-                         "ana.vip@mail.com\n\n"
-                         "⚠️ La cantidad de nombres y emails debe coincidir.\n"
-                         "Escribe 'cancelar' para volver."
-                     )
-                     user_states[sender_phone_normalized] = user_status # Actualizar estado
-                 elif choice_lower == 'normal' or choice_lower == 'normales' or choice_lower == 'general' or choice_lower == 'generales':
-                     logger.info(f"Usuario VIP {sender_phone_normalized} eligió añadir tipo Normal para evento {selected_event}.")
-                     user_status['state'] = STATE_AWAITING_GUEST_DATA
-                     user_status['guest_type'] = 'Normal'
-                     response_text = (
-                         f"Ok, vas a añadir invitados *Generales* para *{selected_event}*.\n\n"
-                         "Envíame la lista en formato Nombres -> Emails:\n\n"
-                         "Ejemplo:\n"
-                         "Juan Perez\n"
-                         "Maria Garcia\n\n" # Línea vacía separadora
-                         "juan.p@ejemplo.com\n"
-                         "maria.g@ejemplo.com\n\n"
-                         "⚠️ La cantidad de nombres y emails debe coincidir.\n"
-                         "Escribe 'cancelar' para volver."
-                     )
-                     user_states[sender_phone_normalized] = user_status # Actualizar estado
-                 else:
-                     response_text = f"No entendí '{incoming_msg}'. Por favor, responde 'Normal' o 'VIP' para indicar qué tipo de invitados quieres añadir para *{selected_event}*."
-                     # Mantener estado actual (AWAITING_GUEST_TYPE)
+             # Permitir "cancelar" en este estado
+             elif incoming_msg.lower() in ["cancelar", "salir", "cancel", "exit"]:
+                 logger.info(f"Usuario {sender_phone_normalized} canceló la selección de tipo de invitado para {selected_event}.")
+                 response_text = f"Selección de tipo cancelada para el evento *{selected_event}*. Puedes enviar cualquier mensaje para empezar de nuevo."
+                 user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Resetear
+             else:
+                  choice_lower = incoming_msg.lower()
+                  if choice_lower == 'vip':
+                      logger.info(f"Usuario VIP {sender_phone_normalized} eligió añadir tipo VIP para evento {selected_event}.")
+                      user_status['state'] = STATE_AWAITING_GUEST_DATA
+                      user_status['guest_type'] = 'VIP'
+                      response_text = (
+                          f"Ok, vas a añadir invitados *VIP* para *{selected_event}*.\n\n"
+                          "Envíame la lista en formato Nombres primero, luego una línea vacía, y luego los Emails.\n\n"
+                          "Ejemplo:\n"
+                          "Carlos VIP\n"
+                          "Ana VIP\n\n" # Línea vacía separadora
+                          "carlos.vip@mail.com\n"
+                          "ana.vip@mail.com\n\n"
+                          "⚠️ La cantidad de nombres y emails debe coincidir.\n"
+                          "Escribe 'cancelar' para volver."
+                      )
+                      user_states[sender_phone_normalized] = user_status # Actualizar estado
+                  elif choice_lower in ['normal', 'normales', 'general', 'generales']:
+                      logger.info(f"Usuario VIP {sender_phone_normalized} eligió añadir tipo Normal para evento {selected_event}.")
+                      user_status['state'] = STATE_AWAITING_GUEST_DATA
+                      user_status['guest_type'] = 'Normal'
+                      response_text = (
+                          f"Ok, vas a añadir invitados *Generales* para *{selected_event}*.\n\n"
+                          "Envíame la lista en formato Nombres primero, luego una línea vacía, y luego los Emails.\n\n"
+                          "Ejemplo:\n"
+                          "Juan Perez\n"
+                          "Maria Garcia\n\n" # Línea vacía separadora
+                          "juan.p@ejemplo.com\n"
+                          "maria.g@ejemplo.com\n\n"
+                          "⚠️ La cantidad de nombres y emails debe coincidir.\n"
+                          "Escribe 'cancelar' para volver."
+                      )
+                      user_states[sender_phone_normalized] = user_status # Actualizar estado
+                  else:
+                      response_text = f"No entendí '{incoming_msg}'. Por favor, responde 'Normal' o 'VIP' para indicar qué tipo de invitados quieres añadir para *{selected_event}*."
+                      # Mantener estado actual (AWAITING_GUEST_TYPE)
+
 
         # --- ESTADO: ESPERANDO DATOS DEL INVITADO ---
         elif current_state == STATE_AWAITING_GUEST_DATA:
-            # Debe haber un evento y un tipo (Normal o VIP) seleccionados
-            if not selected_event or not selected_guest_type:
-                logger.error(f"Estado AWAITING_GUEST_DATA alcanzado sin evento ({selected_event}) o tipo ({selected_guest_type}) para {sender_phone_normalized}. Reiniciando.")
-                response_text = "Hubo un problema interno, no sé qué evento o tipo procesar. Por favor, empieza de nuevo diciendo 'Hola'."
-                user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Resetear
-            elif incoming_msg.lower() in ["cancelar", "salir", "cancel", "exit"]:
-                logger.info(f"Usuario {sender_phone_normalized} canceló la adición de invitados para {selected_event}.")
-                response_text = "Operación cancelada. Puedes decir 'Hola' para elegir otro evento o gestionar uno diferente."
-                user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Resetear
-            else:
-                # --- Lógica de Procesamiento de Datos ---
+             logger.info(f"Procesando mensaje en STATE_AWAITING_GUEST_DATA para {sender_phone_normalized}")
+             # Debe haber un evento y un tipo (Normal o VIP) seleccionados
+             if not selected_event or not selected_guest_type:
+                 logger.error(f"Estado AWAITING_GUEST_DATA alcanzado sin evento ({selected_event}) o tipo ({selected_guest_type}) para {sender_phone_normalized}. Reiniciando a INITIAL.")
+                 response_text = "Hubo un problema interno, no sé qué evento o tipo procesar. Por favor, envía cualquier mensaje para empezar de nuevo."
+                 user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Resetear
+             # Manejar "cancelar" en este estado
+             elif incoming_msg.lower() in ["cancelar", "salir", "cancel", "exit"]:
+                 logger.info(f"Usuario {sender_phone_normalized} canceló la adición de invitados para {selected_event}.")
+                 response_text = f"Operación de añadir invitados cancelada para el evento *{selected_event}*. Puedes enviar cualquier mensaje para elegir otro evento o gestionar uno diferente."
+                 user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Resetear
+             else:
+                  # --- Lógica de Procesamiento de Datos ---
 
-                if selected_guest_type == 'VIP':
-                    logger.info(f"Procesando datos invitados VIP para '{selected_event}' de {sender_phone_normalized}")
-                    if not vip_guest_sheet:
-                        logger.error(f"Intento de añadir VIPs pero la hoja 'Invitados VIP' no está disponible/accesible.")
-                        response_text = "❌ Error: No se pudo acceder a la hoja de invitados VIP. Contacta al administrador."
-                        # Resetear estado para evitar bucles
-                        user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
-                    else:
-                        # Parsear usando la función específica para N->E VIP
-                        parsed_vip_list = parse_vip_guest_list(incoming_msg)
+                  if selected_guest_type == 'VIP':
+                      logger.info(f"Procesando datos invitados VIP para '{selected_event}' de {sender_phone_normalized}")
+                      if not vip_guest_sheet:
+                          logger.error(f"Intento de añadir VIPs pero la hoja 'Invitados VIP' no está disponible/accesible.")
+                          response_text = "❌ Error: No se pudo acceder a la hoja de invitados VIP. Contacta al administrador."
+                          # Resetear estado para evitar bucles
+                          user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+                      else:
+                          # Parsear usando la función específica para N->E VIP
+                          # parse_vip_guest_list devuelve (lista_invitados, error_info)
+                          parsed_vip_list, error_info_parsing = parse_vip_guest_list(incoming_msg)
 
-                        if parsed_vip_list is None: # Error de formato N->E o conteo
-                            response_text = ("⚠️ Formato incorrecto para VIPs.\n"
-                                             "Asegúrate de enviar Nombres primero, luego una línea vacía, y luego los Emails.\n"
-                                             "Ejemplo:\n"
-                                             "Carlos VIP\n\n"
-                                             "carlos.vip@mail.com\n\n"
-                                             "La cantidad de nombres y emails debe coincidir. Intenta de nuevo o escribe 'cancelar'.")
-                            # Mantener estado AWAITING_GUEST_DATA para reintento
-                        elif not parsed_vip_list: # El parser funcionó pero no encontró datos válidos
-                             response_text = ("⚠️ No encontré nombres o emails válidos en tu mensaje.\n"
-                                             "Revisa que no estén vacíos y que los emails parezcan correctos.\n"
-                                             "Intenta de nuevo o escribe 'cancelar'.")
-                             # Mantener estado AWAITING_GUEST_DATA para reintento
-                        else: # Lista VIP parseada correctamente
-                            vip_pr_name = sender_phone_normalized # Fallback
-                            try:
-                                vip_pr_map = sheet_conn.get_vip_phone_pr_mapping()
-                                if vip_pr_map:
-                                    pr_name_found = vip_pr_map.get(sender_phone_normalized)
-                                    if pr_name_found: vip_pr_name = pr_name_found
-                                    else: logger.warning(f"No se encontró PR Name VIP mapeado para {sender_phone_normalized}")
-                            except Exception as vip_map_err:
-                                logger.error(f"Error buscando nombre PR VIP: {vip_map_err}")
+                          # Verificar si hubo error de formato grave O si la lista parseada está vacía a pesar de haber texto original
+                          if not parsed_vip_list:
+                              # No hubo invitados válidos parseados. Reportar el error si lo hubo.
+                              logger.error(f"La extracción de invitados VIP falló o no encontró invitados válidos para {sender_phone_normalized}. Error info: {error_info_parsing}")
+                              # Dar feedback basado en error_info_parsing si existe
+                              if error_info_parsing and error_info_parsing.get('error_type') == 'desbalance':
+                                   response_text = (f"⚠️ Formato incorrecto para VIPs.\n"
+                                                    f"Detecté un desbalance en la categoría '{error_info_parsing.get('category', 'desconocida')}':\n"
+                                                    f"• {error_info_parsing.get('names_count', 'N/A')} nombres\n"
+                                                    f"• {error_info_parsing.get('emails_count', 'N/A')} emails\n\n"
+                                                    f"La cantidad debe ser la misma *en cada categoría con datos*. Revisa tu lista, separa nombres y emails con una línea vacía, e intenta de nuevo o 'cancelar'.")
+                              elif error_info_parsing and error_info_parsing.get('error_type') in ['no_valid_categories', 'empty_message', 'incomplete_category', 'no_valid_pairs']:
+                                   response_text = ("⚠️ No pude encontrar nombres y emails válidos en el formato esperado para VIPs (Nombres -> Emails separados por línea vacía, opcionalmente por categorías 'Hombres'/'Mujeres').\n"
+                                                    "Revisa el ejemplo e intenta de nuevo o escribe 'cancelar'.")
+                              # Si no hubo un error_info_parsing específico pero la lista parseada estaba vacía, es un error de datos.
+                              elif error_info_parsing is None and incoming_msg.strip(): # Asegurarse que el mensaje original no estaba vacío
+                                  response_text = ("⚠️ No encontré nombres o emails válidos en tu mensaje VIP. Revisa que no estén vacíos y que los emails parezcan correctos.\n"
+                                                    "Intenta de nuevo o escribe 'cancelar'.")
+                              else: # Fallback genérico si no se pudo determinar el error específico
+                                   response_text = ("⚠️ No pude procesar tu lista VIP. Asegúrate que sigue el formato correcto (Nombres -> Emails con línea vacía).\n"
+                                                    "La cantidad de nombres y emails debe coincidir. Intenta de nuevo o escribe 'cancelar'.")
+                              # Mantener estado AWAITING_GUEST_DATA para reintento si hubo un problema de parseo/datos
+                              # Si el error_info era 'empty_message', es mejor resetear.
+                              if error_info_parsing and error_info_parsing.get('error_type') == 'empty_message':
+                                  user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
 
-                            # Añadir a la hoja VIP
-                            added_count = add_vip_guests_to_sheet(vip_guest_sheet, parsed_vip_list, vip_pr_name)
+                          else: # Lista VIP parseada correctamente (hay al menos 1 invitado válido)
+                              # Obtener el nombre del PR (usando mapeo VIP) para la columna 'PR' en la hoja 'Invitados VIP'
+                              vip_pr_name = sender_phone_normalized # Fallback
+                              try:
+                                  vip_pr_map = sheet_conn.get_vip_phone_pr_mapping()
+                                  if vip_pr_map:
+                                       pr_name_found = vip_pr_map.get(sender_phone_normalized)
+                                       if pr_name_found: vip_pr_name = pr_name_found
+                                       else: logger.warning(f"No se encontró PR Name VIP mapeado para {sender_phone_normalized} para columna 'PR' en 'Invitados VIP'. Usando número.")
+                                  else:
+                                       logger.warning("Mapeo PR VIP no disponible para columna 'PR' en 'Invitados VIP'. Usando número.")
 
-                            if added_count > 0:
-                                response_text = f"✅ ¡Éxito! Se anotaron *{added_count}* invitado(s) VIP para el evento *{selected_event}*."
-                                user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Resetear
-                            elif added_count == -1: # Éxito parcial, algunos inválidos
-                                response_text = f"⚠️ Se anotaron algunos invitados VIP para *{selected_event}*, pero otros tenían datos inválidos y fueron omitidos."
-                                user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Resetear
-                            else: # added_count == 0 (Error interno o no se añadieron filas válidas)
-                                response_text = f"❌ Hubo un error al guardar los invitados VIP en la hoja. Por favor, intenta de nuevo más tarde o contacta al administrador."
-                                # Mantener estado para posible reintento o resetear? Resetear por seguridad.
-                                user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+                              except Exception as vip_map_err:
+                                  logger.error(f"Error buscando nombre PR VIP para columna 'PR': {vip_map_err}")
 
-                elif selected_guest_type == 'Normal':
-                    logger.info(f"Procesando datos invitados Normales para '{selected_event}' de {sender_phone_normalized}")
 
-                    # Obtener la hoja específica del evento Normal
-                    event_sheet = sheet_conn.get_sheet_by_event_name(selected_event)
-                    if not event_sheet:
-                        logger.error(f"No se pudo obtener o crear la hoja para el evento normal '{selected_event}'")
-                        response_text = f"❌ Error: No se pudo acceder a la hoja para el evento '{selected_event}'. Contacta al administrador."
-                        user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Resetear
-                    else:
-                        # Inicializar error_info localmente ANTES de parsear
-                        error_info_parsing = None
-                        structured_guests = None
+                              # Añadir a la hoja VIP
+                              # add_vip_guests_to_sheet necesita la hoja, la lista parseada y el nombre del PR
+                              # add_vip_guests_to_sheet ya maneja la validación final y loggea omisiones
+                              added_count = add_vip_guests_to_sheet(vip_guest_sheet, parsed_vip_list, vip_pr_name)
 
-                        # Intentar parsear con el formato Nombres->Emails primero
-                        logger.info("Intentando extractor para formato Normal (Nombres -> Emails)...")
-                        # Asumimos que extract_guests_from_split_format usa las líneas originales
-                        # Necesitamos pasarle incoming_msg.split('\n') o similar
-                        data_lines_list = incoming_msg.split('\n')
-                        structured_guests, error_info_parsing = extract_guests_from_split_format(data_lines_list)
+                              if added_count > 0:
+                                  response_text = f"✅ ¡Éxito! Se anotaron *{added_count}* invitado(s) VIP para el evento *{selected_event}*."
+                                  # Resetear estado después de éxito
+                                  user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+                              elif added_count == -1: # add_vip_guests_to_sheet devolvió -1 (hubo items pero todos inválidos)
+                                   response_text = f"⚠️ Intenté anotar invitados VIP para *{selected_event}*, pero no encontré datos válidos (ej. email o nombre faltante) en tu lista. Revisa el formato y los datos. Intenta de nuevo o escribe 'cancelar'."
+                                   # Mantener estado para reintento
+                              else: # added_count == 0 (Error interno en add_vip_guests_to_sheet o no se añadieron filas)
+                                   response_text = f"❌ Hubo un error al guardar los invitados VIP en la hoja. Por favor, intenta de nuevo más tarde o contacta al administrador."
+                                   # Resetear por seguridad en caso de error de escritura
+                                   user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
 
-                        # Si el formato N->E falló o no devolvió nada, podrías intentar otros métodos
-                        # (Como AI o el parseo manual estándar que tenías antes)
-                        # if not structured_guests and OPENAI_AVAILABLE and client:
-                        #     logger.info("Formato N->E falló, intentando con OpenAI...")
-                        #     # ... lógica OpenAI ...
-                        # if not structured_guests:
-                        #     logger.info("Formato N->E y AI fallaron, intentando extractor manual estándar...")
-                        #     # ... lógica extractor manual estándar ...
 
-                        # Procesar resultado del parseo
-                        if not structured_guests:
-                            logger.error(f"La extracción de invitados normales falló para {sender_phone_normalized}. Error info: {error_info_parsing}")
-                            # Dar feedback basado en error_info_parsing si existe
-                            if error_info_parsing and error_info_parsing.get('error_type') == 'desbalance':
-                                response_text = (f"⚠️ Formato incorrecto. Detecté un desbalance:\n"
-                                                 f"• {error_info_parsing.get('names_count', 'N/A')} nombres\n"
-                                                 f"• {error_info_parsing.get('emails_count', 'N/A')} emails\n\n"
-                                                 f"La cantidad debe ser la misma. Revisa tu lista, separa nombres y emails con una línea vacía, e intenta de nuevo o 'cancelar'.")
-                            elif error_info_parsing and error_info_parsing.get('error_type') == 'no_valid_data':
-                                 response_text = ("⚠️ No pude encontrar nombres y emails válidos en el formato esperado (Nombres -> Emails separados por línea vacía).\n"
-                                                  "Revisa el ejemplo e intenta de nuevo o escribe 'cancelar'.")
-                            else: # Error genérico de parseo
-                                response_text = ("⚠️ No pude procesar tu lista. Asegúrate que sigue el formato:\n"
-                                                 "Nombres (uno por línea)\n\n" # Línea vacía
-                                                 "Emails (uno por línea)\n\n"
-                                                 "Intenta de nuevo o escribe 'cancelar'.")
-                            # Mantener estado para reintento
-                        else:
-                            # --- Añadir invitados normales a la hoja del evento ---
-                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp', "ENVIADO"] # Ajusta tus headers
+                  elif selected_guest_type == 'Normal':
+                      logger.info(f"Procesando datos invitados Normales para '{selected_event}' de {sender_phone_normalized}")
 
-                            try:
-                                # Verificar/Crear encabezados (maneja hoja vacía)
+                      # Obtener la hoja específica del evento Normal
+                      event_sheet = sheet_conn.get_sheet_by_event_name(selected_event)
+                      if not event_sheet:
+                          logger.error(f"No se pudo obtener o crear la hoja para el evento normal '{selected_event}'.")
+                          response_text = f"❌ Error: No se pudo acceder a la hoja para el evento '{selected_event}'. Contacta al administrador."
+                          user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Resetear
+                      else:
+                           # Inicializar error_info localmente ANTES de parsear
+                           error_info_parsing = None
+                           structured_guests = None
+
+                           # Usar el extractor para formato dividido Nombres->Emails (incluye categorías opcionales)
+                           logger.info("Usando extractor para formato Normal (Nombres -> Emails)...")
+                           data_lines_list = incoming_msg.split('\n')
+                           # extract_guests_from_split_format devuelve (lista_invitados, error_info)
+                           structured_guests, error_info_parsing = extract_guests_from_split_format(data_lines_list)
+
+
+                           # Procesar resultado del parseo
+                           if not structured_guests: # La lista parseada está vacía
+                                # No hubo invitados válidos parseados. Reportar el error si lo hubo.
+                               logger.error(f"La extracción de invitados normales falló o no encontró invitados válidos para {sender_phone_normalized}. Error info: {error_info_parsing}")
+                               # Dar feedback basado en error_info_parsing si existe
+                               if error_info_parsing and error_info_parsing.get('error_type') == 'desbalance':
+                                    response_text = (f"⚠️ Formato incorrecto.\n"
+                                                     f"Detecté un desbalance en la categoría '{error_info_parsing.get('category', 'desconocida')}':\n"
+                                                     f"• {error_info_parsing.get('names_count', 'N/A')} nombres\n"
+                                                     f"• {error_info_parsing.get('emails_count', 'N/A')} emails\n\n"
+                                                     f"La cantidad debe ser la misma *en cada categoría con datos*. Revisa tu lista, separa nombres y emails con una línea vacía, e intenta de nuevo o 'cancelar'.")
+                               elif error_info_parsing and error_info_parsing.get('error_type') in ['no_valid_categories', 'empty_message', 'incomplete_category', 'no_valid_pairs']:
+                                    response_text = ("⚠️ No pude encontrar nombres y emails válidos en el formato esperado (Nombres -> Emails separados por línea vacía, opcionalmente por categorías).\n"
+                                                     "Revisa el ejemplo e intenta de nuevo o escribe 'cancelar'.")
+                               # Si no hubo un error_info_parsing específico pero la lista parseada estaba vacía, es un error de datos.
+                               elif error_info_parsing is None and incoming_msg.strip(): # Asegurarse que el mensaje original no estaba vacío
+                                    response_text = ("⚠️ No encontré invitados con nombre y email válidos en tu lista. Revisa el formato y los datos.\n"
+                                                     "Asegúrate que sigue el formato Nombres -> Emails (separados por línea vacía) y que cada nombre tiene un email.\n"
+                                                     "Intenta de nuevo o escribe 'cancelar'.")
+                               else: # Fallback genérico si no se pudo determinar el error específico
+                                     response_text = ("⚠️ No pude procesar tu lista. Asegúrate que sigue el formato Nombres -> Emails (separados por línea vacía).\n"
+                                                      "Intenta de nuevo o escribe 'cancelar'.")
+
+                               # Mantener estado AWAITING_GUEST_DATA para reintento si hubo un problema de parseo/datos
+                               # Si el error_info era 'empty_message', es mejor resetear.
+                               if error_info_parsing and error_info_parsing.get('error_type') == 'empty_message':
+                                   user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+
+
+                           else: # Lista Normal parseada correctamente (hay al menos 1 invitado válido)
+                                # --- Añadir invitados normales a la hoja del evento ---
+                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp', "ENVIADO"] # Ajusta tus headers
+
                                 try:
-                                    headers = event_sheet.row_values(1)
-                                except gspread.exceptions.APIError as api_err:
-                                    # Si la hoja está totalmente vacía, row_values(1) da error
-                                    if "exceeds grid limits" in str(api_err).lower() or "out of bounds" in str(api_err).lower():
-                                        headers = []
-                                    else:
-                                        raise api_err # Otro error de API
-                                except Exception as header_err:
-                                     logger.error(f"Error inesperado leyendo headers de '{event_sheet.title}': {header_err}")
-                                     raise header_err # Relanzar para captura general
+                                    # Verificar/Crear encabezados (maneja hoja vacía) - Lógica movida a get_sheet_by_event_name
+                                    # Nos aseguramos de tener la hoja y sus encabezados correctos antes de añadir filas
+                                    # Simplemente leer para confirmar headers después de get_sheet...
+                                    # headers_check = event_sheet.row_values(1)
 
-                                if not headers or len(headers) < len(expected_headers) or headers[:len(expected_headers)] != expected_headers:
-                                    logger.info(f"Actualizando/Creando encabezados en la hoja '{event_sheet.title}'")
-                                    # Usar update para asegurar que empieza en A1
-                                    # El rango debe cubrir todos los headers esperados
-                                    header_range = f"A1:{gspread.utils.rowcol_to_a1(1, len(expected_headers))}"
-                                    event_sheet.update(header_range, [expected_headers], value_input_option='USER_ENTERED')
-
-                                # Validar invitados y crear filas
-                                valid_guests_for_sheet = []
-                                invalid_entries_found = False
-                                for guest in structured_guests:
-                                    # Asumiendo que structured_guests tiene dicts con 'nombre', 'email', 'genero'
-                                    if isinstance(guest, dict) and guest.get("email") and guest.get("nombre"):
-                                        if re.match(r"[^@]+@[^@]+\.[^@]+", guest["email"]): # Email válido
-                                            valid_guests_for_sheet.append(guest)
-                                        else:
-                                            logger.warning(f"Invitado normal omitido (email inválido): {guest.get('email')} para {guest.get('nombre')}")
-                                            invalid_entries_found = True
-                                    else:
-                                        logger.warning(f"Invitado normal omitido (incompleto): {guest}")
-                                        invalid_entries_found = True
-
-                                # Si no quedó ningún invitado válido
-                                if not valid_guests_for_sheet:
-                                    response_text = "⚠️ No encontré invitados con nombre y email válidos en tu lista. Revisa el formato e intenta de nuevo."
-                                    # Mantener estado para reintento
-                                else:
-                                    # Obtener nombre del PR (Normal)
+                                    # Obtener nombre del PR (usando mapeo General) para la columna 'Publica' en la hoja de evento
                                     pr_name = sender_phone_normalized # Fallback
                                     try:
                                         phone_to_pr_map = sheet_conn.get_phone_pr_mapping()
                                         if phone_to_pr_map:
-                                            pr_name_found = phone_to_pr_map.get(sender_phone_normalized)
-                                            if pr_name_found: pr_name = pr_name_found
+                                             pr_name_found = phone_to_pr_map.get(sender_phone_normalized)
+                                             if pr_name_found: pr_name = pr_name_found
+                                             else: logger.warning(f"No se encontró PR Name Normal mapeado para {sender_phone_normalized} para columna 'Publica'. Usando número.")
+                                        else:
+                                             logger.warning("Mapeo PR Normal no disponible para columna 'Publica'. Usando número.")
+
                                     except Exception as e:
-                                        logger.error(f"Error al buscar PR Normal: {e}")
+                                        logger.error(f"Error al buscar PR Normal para columna 'Publica': {e}")
 
                                     # Crear filas para Google Sheets
                                     rows_to_add = []
-                                    for guest in valid_guests_for_sheet:
-                                        # Asumiendo que tu parser asigna 'genero' (Hombre/Mujer/Otro)
+                                    # La validación básica (nombre y email no vacíos, email format) ya se hizo en extract_guests_from_split_format
+                                    valid_guests_count = 0 # Contar cuántos items parseados se intentarán añadir
+                                    for guest in structured_guests:
+                                        # structured_guests ya viene validado por el parser
+                                        # Asumiendo que structured_guests tiene dicts con 'nombre', 'apellido', 'email', 'genero'
                                         full_name = f"{guest.get('nombre', '')} {guest.get('apellido', '')}".strip()
                                         rows_to_add.append([
                                             full_name,
                                             guest.get("email", ""),
-                                            guest.get("genero", "Otro"), # Default si el parser no lo da
+                                            guest.get("genero", "Otro"), # Default si el parser no lo da (e.g. categoría 'General')
                                             pr_name,
                                             selected_event,
                                             timestamp,
-                                            '' # Columna ENVIADO (vacía inicialmente)
+                                            '' # Columna ENVIADO (vacía inicialmente, checkbox sin marcar)
                                         ])
+                                        valid_guests_count += 1 # Contar los que realmente vamos a intentar añadir
+
 
                                     # Añadir a la hoja específica del evento
                                     if rows_to_add:
-                                        # ---> ¡NUEVO LOG ANTES DE ENVIAR! <---
-                                        logger.info(f"DEBUG APPENDING DATA: Intentando añadir estas filas: {rows_to_add}")
-                                        # ------------------------------------
-                                        try: # Añadido try/except alrededor de append_rows
-                                            result = event_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
-                                            added_count = result.get('updates', {}).get('updatedRows', 0)
-                                            logger.info(f"Agregados {added_count} invitados normales a '{selected_event}'")
+                                         # ---> ¡LOG ANTES DE ENVIAR! <---
+                                         logger.info(f"Intentando añadir {len(rows_to_add)} filas normales a la hoja '{event_sheet.title}'.")
+                                         # ------------------------------------
+                                         try: # Añadido try/except específico para append_rows
+                                             result = event_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
+                                             added_count = result.get('updates', {}).get('updatedRows', 0)
+                                             logger.info(f"Resultado de append_rows para normales: {result}")
+                                             logger.info(f"Agregados {added_count} invitados normales a '{selected_event}'")
 
-                                            if added_count == len(rows_to_add) and not invalid_entries_found:
-                                                response_text = f"✅ ¡Éxito! Se anotaron *{added_count}* invitado(s) Generales para *{selected_event}*."
-                                            elif added_count > 0:
-                                                response_text = f"⚠️ Se anotaron *{added_count}* invitado(s) Generales para *{selected_event}*, pero algunos de tu lista tenían datos inválidos y fueron omitidos."
-                                            else:
-                                                logger.error(f"Error añadiendo filas normales a '{event_sheet.title}', API reportó 0 añadidas.")
-                                                response_text = f"❌ Hubo un error al guardar los invitados en la hoja '{selected_event}'. Intenta de nuevo."
+                                             # Comparar invitados añadidos con invitados parseados
+                                             if added_count == valid_guests_count and not error_info_parsing: # Si se añadieron todos los parseados y no hubo errores de formato
+                                                 response_text = f"✅ ¡Éxito! Se anotaron *{added_count}* invitado(s) Generales para *{selected_event}*."
+                                             elif added_count > 0: # Si se añadieron algunos, pero no todos los parseados (hubo inválidos filtrados) O hubo error_info_parsing
+                                                  # Combinar el conteo de añadidos con la advertencia de formato si existió
+                                                  base_msg = f"⚠️ Se anotaron *{added_count}* invitado(s) Generales para *{selected_event}*, pero algunos de tu lista tenían datos inválidos y fueron omitidos."
+                                                  if error_info_parsing:
+                                                      base_msg += f" También detecté problemas con algunas entradas: {error_info_parsing.get('message', 'Formato incorrecto.')}"
+                                                  response_text = base_msg
 
-                                            # Resetear estado SIEMPRE que se haya añadido algo o habido éxito parcial
-                                            if added_count > 0:
-                                                user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+                                             else: # added_count == 0 (Error interno en append o no se añadieron filas)
+                                                  logger.error(f"Error añadiendo filas normales a '{event_sheet.title}', API reportó 0 añadidas.")
+                                                  response_text = f"❌ Hubo un error al guardar los invitados en la hoja '{selected_event}'. Intenta de nuevo."
 
-                                        except Exception as append_err: # Capturar error específico de append_rows
-                                            logger.error(f"Error DIRECTO en event_sheet.append_rows: {append_err}")
-                                            logger.error(traceback.format_exc())
-                                            response_text = f"❌ Hubo un error crítico al intentar guardar en la hoja '{selected_event}'. Contacta al administrador."
-                                            # No resetear estado para posible diagnóstico
+                                             # Resetear estado SIEMPRE que se haya añadido algo o habido éxito total/parcial
+                                             if added_count > 0:
+                                                  user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+                                             # Si no se añadió nada (added_count=0) Y hubo errores de parseo, mantenemos el estado para dar feedback.
+                                             # Si added_count=0 y error_info_parsing is None, es un error inesperado, también reseteamos.
+                                             elif error_info_parsing is None:
+                                                  user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+
+
+                                         except gspread.exceptions.APIError as append_api_err: # Capturar error específico de append_rows
+                                             logger.error(f"Error DIRECTO de API en event_sheet.append_rows: {append_api_err}")
+                                             logger.error(traceback.format_exc())
+                                             # Intenta dar un mensaje más específico si el error lo permite
+                                             error_detail = str(append_api_err)
+                                             if "invalid value" in error_detail.lower() or "bad request" in error_detail.lower():
+                                                  response_text = f"❌ Error de formato o datos inválidos al guardar en la hoja '{selected_event}'. Revisa tu lista cuidadosamente. Detalle técnico: {error_detail[:50]}..."
+                                             elif "permission" in error_detail.lower():
+                                                  response_text = f"❌ Error de permisos al escribir en la hoja '{selected_event}'. Contacta al administrador."
+                                             else:
+                                                  response_text = f"❌ Hubo un error crítico de Google Sheets al intentar guardar en la hoja '{selected_event}'. Contacta al administrador. Detalle técnico: {error_detail[:50]}..."
+                                             # No resetear estado en caso de errores de API para posible diagnóstico
+                                         except Exception as append_err: # Capturar otros errores inesperados en append
+                                             logger.error(f"Error INESPERADO al intentar append_rows a '{event_sheet.title}': {append_err}")
+                                             logger.error(traceback.format_exc())
+                                             response_text = f"❌ Hubo un error interno al intentar guardar en la hoja '{selected_event}'. Intenta de nuevo."
+                                             # No resetear estado necesariamente
                                     else:
-                                        logger.error("Error lógico: Había invitados válidos pero no se generaron filas para añadir.")
-                                        response_text = "❌ Hubo un error interno al preparar los datos. Intenta de nuevo."
+                                         # Esto no debería ocurrir si structured_guests no estaba vacío
+                                         logger.error("Error lógico: Había invitados válidos parseados pero no se generaron filas para añadir.")
+                                         response_text = "❌ Hubo un error interno al preparar los datos para guardar. Intenta de nuevo."
 
-                            except gspread.exceptions.APIError as sheet_api_err:
-                                 logger.error(f"Error de API de Google Sheets al operar en '{event_sheet.title}': {sheet_api_err}")
-                                 response_text = f"❌ Hubo un error de comunicación con Google Sheets ({sheet_api_err.response.status_code}). Intenta de nuevo más tarde."
-                                 # No resetear estado necesariamente, puede ser temporal
-                            except Exception as e:
-                                logger.error(f"Error inesperado al procesar/añadir invitados normales a '{event_sheet.title}': {e}")
-                                logger.error(traceback.format_exc())
-                                response_text = "❌ Hubo un error interno procesando tu lista. Intenta de nuevo."
-                                # No resetear estado necesariamente
+                                except gspread.exceptions.APIError as sheet_api_err:
+                                   logger.error(f"Error de API de Google Sheets al operar en '{event_sheet.title}': {sheet_api_err}")
+                                   response_text = f"❌ Hubo un error de comunicación con Google Sheets ({sheet_api_err.response.status_code if sheet_api_err.response else '?'}). Intenta de nuevo más tarde."
+                                   # No resetear estado necesariamente, puede ser temporal
+                                except Exception as e:
+                                   logger.error(f"Error inesperado al procesar/añadir invitados normales a '{event_sheet.title}': {e}")
+                                   import traceback
+                                   logger.error(traceback.format_exc())
+                                   response_text = "❌ Hubo un error interno procesando tu lista. Intenta de nuevo."
+                                   # No resetear estado necesariamente
 
-                else: # Tipo de invitado desconocido en estado (no debería pasar)
-                    logger.error(f"Estado AWAITING_GUEST_DATA con guest_type inválido o nulo: {selected_guest_type} para {sender_phone_normalized}")
-                    response_text = "Hubo un error con tu selección de tipo de invitado. Por favor, empieza de nuevo ('Hola')."
-                    user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Resetear
+
+                  else: # Tipo de invitado desconocido en estado (no debería pasar)
+                      logger.error(f"Estado AWAITING_GUEST_DATA con guest_type inválido o nulo: {selected_guest_type} para {sender_phone_normalized}")
+                      response_text = "Hubo un error con tu selección de tipo de invitado. Por favor, envía cualquier mensaje para empezar de nuevo."
+                      user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Resetear
+
 
         # --- Estado Desconocido ---
         else:
             logger.warning(f"Estado no reconocido '{current_state}' para {sender_phone_normalized}. Reiniciando a estado inicial.")
-            response_text = "No estoy seguro de qué estábamos hablando. 🤔 Por favor, di 'Hola' para comenzar de nuevo."
+            response_text = "No estoy seguro de qué estábamos hablando. 🤔 Por favor, envía cualquier mensaje para comenzar de nuevo."
             user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
 
         # ====================================
@@ -2700,12 +2732,13 @@ def whatsapp_reply():
         else:
             # Si llegamos aquí sin response_text, algo falló en la lógica de estados
             # o una acción no generó respuesta (ej. parseo fallido sin mensaje de error)
-            logger.warning(f"No se generó texto de respuesta para enviar al final del flujo (Estado: {current_state}).")
-            # Enviar un mensaje genérico de fallback? O solo loggear?
-            # Podría ser útil enviar algo para que el usuario no quede esperando.
-            fallback_message = "No estoy seguro de cómo responder a eso. Puedes decir 'Hola' para empezar."
+            # Esto debería ser raro con la lógica de fallback en cada estado.
+            logger.warning(f"No se generó texto de respuesta para enviar al final del flujo (Estado: {current_state}). Esto es inesperado.")
+            # Enviar un mensaje genérico de fallback para que el usuario no quede esperando.
+            fallback_message = "Lo siento, no pude procesar tu mensaje. Ocurrió un problema inesperado. Por favor, envía cualquier mensaje para intentar empezar de nuevo."
             send_twilio_message(sender_phone_raw, fallback_message)
             return jsonify({"status": "processed_no_reply_generated"}), 200
+
 
     except Exception as e:
         # Captura errores generales e inesperados en el flujo principal
