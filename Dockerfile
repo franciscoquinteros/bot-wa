@@ -1,4 +1,11 @@
-FROM python:3.8-slim
+FROM python:3.9-slim
+
+# Instalar dependencias para mysqlclient
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    default-libmysqlclient-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -7,4 +14,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "app.py"]  # Ajusta esto a tu archivo principal
+# Reemplaza "main.py" con el nombre de tu archivo principal
+CMD ["python", "main.py"]

@@ -2135,6 +2135,10 @@ def test_sheet_write():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
+@app.route('/', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy", "message": "WhatsApp bot is running"}), 200
+
 
 @app.route('/setup_checkboxes', methods=['GET'])
 def setup_all_checkboxes():
