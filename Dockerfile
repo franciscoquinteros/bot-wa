@@ -15,4 +15,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Reemplaza "main.py" con el nombre de tu archivo principal
-CMD ["python", "main.py"]
+CMD gunicorn --bind 0.0.0.0:8080 bot_whatsapp:app
