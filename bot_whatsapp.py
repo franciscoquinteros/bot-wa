@@ -903,7 +903,7 @@ def analyze_guests_with_ai(guest_list, category_info=None):
 def extract_guests_from_split_format(lines):
     """
     Procesa el formato BLOQUES: Nombres primero, luego Emails, opcionalmente bajo categorías.
-    Versión REVISADA para mayor robustez y mensajes de error detallados.
+    Versión MEJORADA para mayor robustez con detección flexible de categorías de género.
     Permite categorías vacías mientras haya al menos una categoría válida.
 
     Args:
@@ -933,13 +933,16 @@ def extract_guests_from_split_format(lines):
         if not line:
             continue # Ignorar líneas vacías completamente
 
-        # --- Detectar Categorías ---
+        # --- Detectar Categorías con patrones más flexibles ---
         is_category = False
         potential_category_key = None
-        if line.lower().startswith('hombres'):
+        
+        # Patrones flexibles para categorías masculinas
+        if re.match(r'(?i)^(hombres?|varones?)[\s:]*$', line):
             potential_category_key = 'Hombres'
             is_category = True
-        elif line.lower().startswith('mujeres'):
+        # Patrones flexibles para categorías femeninas
+        elif re.match(r'(?i)^(mujeres?|damas?)[\s:]*$', line):
             potential_category_key = 'Mujeres'
             is_category = True
 
