@@ -2260,6 +2260,56 @@ def whatsapp_reply():
         vip_guest_sheet = sheet_conn.get_vip_guest_sheet()
 
         # ====================================
+        # --- Verificar comandos globales primero ---
+        # ====================================
+        
+        # Verificar si es una consulta de conteo (funciona en cualquier estado)
+        count_patterns = [
+            r'cu[aá]ntos invitados',
+            r'contar invitados',
+            r'total de invitados',
+            r'invitados totales',
+            r'lista de invitados'
+        ]
+        
+        is_count_command = False
+        for pattern in count_patterns:
+            if re.search(pattern, incoming_msg.lower()):
+                is_count_command = True
+                break
+        
+        if is_count_command:
+            logger.info(f"Comando 'count' detectado en estado {current_state}.")
+            guests_by_event = get_guests_by_pr(sheet_conn, sender_phone_normalized)
+
+            # Obtener el nombre del PR (usando mapeo General o VIP según corresponda) para la respuesta
+            pr_name_display = sender_phone_normalized # Fallback
+            try:
+                pr_map = sheet_conn.get_vip_phone_pr_mapping() if is_vip else sheet_conn.get_phone_pr_mapping()
+                if pr_map:
+                     pr_name_found = pr_map.get(sender_phone_normalized)
+                     if pr_name_found: pr_name_display = pr_name_found
+                     else: logger.warning(f"No se encontró nombre PR ({'VIP' if is_vip else 'General'}) mapeado para {sender_phone_normalized} para respuesta de conteo.")
+                else:
+                     logger.warning(f"Mapeo PR ({'VIP' if is_vip else 'General'}) no disponible para respuesta de conteo.")
+            except Exception as e:
+                 logger.error(f"Error buscando nombre PR para respuesta de conteo: {e}")
+
+            response_text = generate_per_event_response(guests_by_event, pr_name_display, sender_phone_normalized)
+
+            # Resetear estado a INITIAL después de mostrar el conteo
+            user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+            
+            # Enviar respuesta y salir
+            if response_text:
+                if not send_twilio_message(sender_phone_raw, response_text):
+                    logger.error(f"Fallo al enviar mensaje de respuesta de conteo a {sender_phone_raw}")
+                    return jsonify({"status": "processed_with_send_error"}), 200
+                else:
+                    logger.info(f"Respuesta de conteo enviada a {sender_phone_raw}")
+                    return jsonify({"status": "success"}), 200
+
+        # ====================================
         # --- Lógica Principal de Estados ---
         # ====================================
 
@@ -2271,32 +2321,8 @@ def whatsapp_reply():
             command_type = parsed_command['command_type']
             logger.info(f"Comando parseado en INITIAL: '{command_type}'")
 
-            # Mantener el comando 'count' para ver la lista actual
-            if command_type == 'count':
-                logger.info(f"Comando 'count' detectado.")
-                guests_by_event = get_guests_by_pr(sheet_conn, sender_phone_normalized)
-
-                # Obtener el nombre del PR (usando mapeo General o VIP según corresponda) para la respuesta
-                pr_name_display = sender_phone_normalized # Fallback
-                try:
-                    pr_map = sheet_conn.get_vip_phone_pr_mapping() if is_vip else sheet_conn.get_phone_pr_mapping()
-                    if pr_map:
-                         pr_name_found = pr_map.get(sender_phone_normalized)
-                         if pr_name_found: pr_name_display = pr_name_found
-                         else: logger.warning(f"No se encontró nombre PR ({'VIP' if is_vip else 'General'}) mapeado para {sender_phone_normalized} para respuesta de conteo.")
-                    else:
-                         logger.warning(f"Mapeo PR ({'VIP' if is_vip else 'General'}) no disponible para respuesta de conteo.")
-                except Exception as e:
-                     logger.error(f"Error buscando nombre PR para respuesta de conteo: {e}")
-
-                response_text = generate_per_event_response(guests_by_event, pr_name_display, sender_phone_normalized)
-
-                # Mantener estado INITIAL después de mostrar el conteo
-                user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
-
-
             # Manejar el comando 'help'
-            elif command_type == 'help':
+            if command_type == 'help':
                  logger.info(f"Comando 'help' detectado.")
                  welcome_text = """👋 ¡Hola! Bienvenido al sistema de gestión de invitados. 
 
@@ -2330,7 +2356,7 @@ Puedo ayudarte con la administración de tu lista de invitados. Aquí tienes lo 
                     user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'available_events': [], 'guest_type': None}
                 else:
                     event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
-                    base_response_text = f"¡Hola! 👋 Eventos disponibles:\n\n{event_list_text}\n\nResponde con el *número* del evento que deseas gestionar."
+                    base_response_text = f"¡Hola! 👋 Eventos disponibles:\n\n{event_list_text}\n\nResponde con el número del evento que deseas gestionar.\n\nSi quieres saber tus invitados escribe:\n*\"cuántos invitados\" o \"lista de invitados\"*"
                     if is_vip:
                         vip_message = "\n\n✨ *Nota: Como PR VIP, tienes acceso especial.*"
                         response_text = base_response_text + vip_message

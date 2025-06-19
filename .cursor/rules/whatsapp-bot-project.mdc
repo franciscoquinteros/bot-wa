@@ -1,0 +1,172 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# WhatsApp Bot Project Rules
+
+## Project Overview
+This is a Flask-based WhatsApp bot for event guest management that integrates with Google Sheets, Twilio, and OpenAI. The main application file is [bot_whatsapp.py](mdc:bot_whatsapp.py).
+
+## Architecture & Core Components
+
+### Main Application Structure
+- **Flask App**: Webhook handler for WhatsApp messages via Twilio
+- **State Management**: User conversation states stored in global `user_states` dictionary
+- **Google Sheets Integration**: Multi-sheet management via `SheetsConnection` singleton
+- **AI Integration**: OpenAI for guest data parsing and sentiment analysis
+- **Authorization**: Phone number-based access control
+
+### Key Classes & Patterns
+- `SheetsConnection`: Singleton pattern for Google Sheets API management with caching
+- State-based conversation flow using constants: `STATE_INITIAL`, `STATE_AWAITING_EVENT_SELECTION`, etc.
+- Phone number normalization for consistent authorization checking
+
+## Code Conventions (MANDATORY)
+
+### Language & Tools
+- **NEVER use npm** - Always use `yarn` for any Node.js dependencies
+- Respect existing folder structure and naming conventions
+- Prioritize code readability over brevity or "clever" solutions
+- Write clear, simple code without over-engineering
+- Choose descriptive, unambiguous names that reveal intention
+- Be consistent: apply the same decisions in similar cases
+- Avoid repetition, but not at the cost of sacrificing clarity
+
+### Python Specific
+- Use descriptive Spanish comments for business logic
+- Follow existing logging patterns with appropriate levels
+- Maintain error handling consistency with try/except blocks
+- Use f-strings for string formatting
+- Keep functions focused and single-purpose
+
+## Google Sheets Integration
+
+### Sheet Structure
+- **Main Sheets**: `Invitados`, `Eventos`, `Telefonos`, `VIP`, `Invitados VIP`
+- **Dynamic Event Sheets**: Created per event with standardized headers
+- **Headers**: Always include `ENVIADO` column with checkboxes for tracking
+- **Caching**: Phone authorization and PR mappings are cached with time-based refresh
+
+### Data Flow Patterns
+1. Authorization check via `Telefonos` sheet
+2. VIP status check via `VIP` sheet  
+3. Event-specific guest storage in dedicated sheets
+4. PR name mapping for attribution
+
+## State Management
+
+### Conversation States
+```python
+STATE_INITIAL = None
+STATE_AWAITING_EVENT_SELECTION = 'AWAITING_EVENT_SELECTION'
+STATE_AWAITING_GUEST_TYPE = 'AWAITING_GUEST_TYPE'
+STATE_AWAITING_GUEST_DATA = 'AWAITING_GUEST_DATA'
+```
+
+### State Transitions
+- Always store `state`, `event`, `guest_type`, `available_events` in user state
+- Reset state to `STATE_INITIAL` after successful operations or cancellation
+- Handle "cancelar" command in all awaiting states
+
+## Guest Data Processing
+
+### Parsing Strategies
+1. **AI-First**: Use OpenAI for complex parsing when available
+2. **Fallback**: Manual parsing with `extract_guests_from_split_format()`
+3. **Format Support**: Names→Emails with optional gender categories
+4. **Validation**: Email format, name presence, data balance checking
+
+### Error Handling Patterns
+- Return tuples: `(parsed_data, error_info)` from parsing functions
+- Provide specific error messages for different failure types
+- Maintain state for retry on parsing errors
+- Reset state on critical errors
+
+## Security & Authorization
+
+### Phone Number Handling
+- Always normalize phone numbers: `re.sub(r'\D', '', phone_number)`
+- Check against both general and VIP authorization lists
+- Use phone→PR name mapping for attribution
+- Log unauthorized access attempts
+
+### Data Validation
+- Validate email formats with regex
+- Check name presence and reasonable length
+- Ensure data balance (names count = emails count)
+- Sanitize input data before sheet operations
+
+## API Integration Patterns
+
+### Twilio Integration
+- Use `send_twilio_message()` for all outbound messages
+- Handle Twilio errors gracefully without breaking flow
+- Always return appropriate HTTP status codes to webhook
+
+### OpenAI Integration
+- Check `OPENAI_AVAILABLE` flag before AI operations
+- Graceful fallback to manual parsing when AI unavailable
+- Use structured JSON responses with format validation
+- Implement reasonable timeouts and error handling
+
+### Google Sheets API
+- Use batch operations where possible
+- Implement retry logic for transient failures
+- Handle API quota limits gracefully
+- Cache frequently accessed data (authorization, mappings)
+
+## Error Handling & Logging
+
+### Logging Strategy
+- Use appropriate log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
+- Include context in error messages (user, operation, data)
+- Log both successes and failures for audit trail
+- Use structured logging with traceback for exceptions
+
+### Error Response Patterns
+- Provide user-friendly error messages in Spanish
+- Include specific guidance for format errors
+- Offer retry or cancellation options
+- Log technical details separately from user messages
+
+## Development Guidelines
+
+### Function Design
+- Keep functions under 50 lines when possible
+- Use clear parameter names and type hints where beneficial
+- Return consistent data structures (tuples for success/error)
+- Document complex business logic with Spanish comments
+
+### Testing Considerations
+- Include test endpoints for sheet write operations
+- Validate sheet structure and permissions
+- Test phone authorization and VIP status checking
+- Verify state transitions and error recovery
+
+### Performance
+- Use caching for frequently accessed Google Sheets data
+- Implement singleton pattern for expensive connections
+- Batch Google Sheets operations when possible
+- Monitor API usage and implement rate limiting if needed
+
+## Common Operations
+
+### Adding New Features
+1. Define new states if conversation flow required
+2. Update state transition logic in main webhook handler
+3. Add appropriate error handling and user feedback
+4. Update authorization/VIP checks if needed
+5. Test with both authorized and unauthorized users
+
+### Debugging
+- Check `user_states` dictionary for conversation context
+- Verify Google Sheets permissions and structure
+- Validate phone number normalization
+- Review Twilio webhook delivery and response codes
+
+### Maintenance
+- Monitor Google Sheets API quotas and usage
+- Update cached data refresh intervals as needed
+- Review and clean up old user states periodically
+- Keep OpenAI prompts and parsing logic updated
