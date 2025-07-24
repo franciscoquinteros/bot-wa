@@ -2324,19 +2324,19 @@ def whatsapp_reply():
             # Manejar el comando 'help'
             if command_type == 'help':
                  logger.info(f"Comando 'help' detectado.")
-                 welcome_text = """👋 ¡Hola! Bienvenido al sistema de gestión de invitados. 
+                 welcome_text = """👋 ¡Hola! Bienvenido al sistema de gestión de invitados. 
 
 Puedo ayudarte con la administración de tu lista de invitados. Aquí tienes lo que puedes hacer:
 
-1️⃣ *Agregar invitados*: 
-   Envía cualquier mensaje (excepto 'lista' o 'ayuda') para ver los eventos disponibles, elige uno, y luego sigue las instrucciones para enviar la lista en el formato Nombres -> Emails.
+1️⃣ *Agregar invitados*: 
+   Envía cualquier mensaje (excepto 'lista' o 'ayuda') para ver los eventos disponibles, elige uno, y luego sigue las instrucciones para enviar la lista en el formato Nombres -> Emails.
 
 2️⃣ *Consultar invitados*:
-   • Escribe "cuántos invitados" o "lista de invitados" para ver tu total por evento.
+  • Escribe "cuántos invitados" o "lista de invitados" para ver tu total por evento.
 
 3️⃣ *Ayuda*:
-   • Escribe "ayuda" para ver estas instrucciones de nuevo.
-   • Si estás en medio de una operación, escribe "cancelar" para empezar de nuevo.
+  • Escribe "ayuda" para ver estas instrucciones de nuevo.
+  • Si estás en medio de una operación, escribe "cancelar" para empezar de nuevo.
 
 ¿En qué puedo ayudarte hoy?""" # Mensaje de ayuda actualizado
                  response_text = welcome_text
@@ -2356,7 +2356,24 @@ Puedo ayudarte con la administración de tu lista de invitados. Aquí tienes lo 
                     user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'available_events': [], 'guest_type': None}
                 else:
                     event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
-                    base_response_text = f"¡Hola! 👋 Eventos disponibles:\n\n{event_list_text}\n\nResponde con el número del evento que deseas gestionar.\n\nSi quieres saber tus invitados escribe:\n*\"cuántos invitados\" o \"lista de invitados\"*"
+                    base_response_text = f"""¡Hola! 👋\n
+
+Soy el Agente de Invitaciones de Savage Prod 😎\n
+
+Conmigo vas a poder anotar tus Invitaciones GENERALES para nuestros eventos activos ! 🤩\n
+
+‼️Recorda que para Invitaciones VIP es necesaria la aprobacion de los perfiles, esas invitaciones las recibimos al email anto@svg-ent.com \n
+
+Eventos disponibles:\n
+
+{event_list_text}\n
+
+Responde con el número del evento en el que deseas anotar tus invitaciones.\n
+
+Si quieres saber tus invitados ya anotados en la lista escribe:
+"cuántos invitados" o "lista de invitados"\n
+
+Ante cualquier duda, falla o feedback comunicate con Anto: https://wa.me/5491164855744"""
                     if is_vip:
                         vip_message = "\n\n✨ *Nota: Como PR VIP, tienes acceso especial.*"
                         response_text = base_response_text + vip_message
