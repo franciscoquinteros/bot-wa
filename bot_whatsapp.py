@@ -2356,19 +2356,17 @@ Puedo ayudarte con la administración de tu lista de invitados. Aquí tienes lo 
                     user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'available_events': [], 'guest_type': None}
                 else:
                     event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
-                    base_response_text = f"""¡Hola! 👋
+                    base_response_text = f"""¡Hola! 👋 Soy el Agente de Invitaciones de Savage Prod 😎
 
-Soy el Agente de Invitaciones de Savage Prod 😎
-
-Conmigo vas a poder anotar tus Invitaciones GENERALES para nuestros eventos activos ! 🤩
-
-‼️Recorda que para Invitaciones VIP es necesaria la aprobacion de los perfiles, esas invitaciones las recibimos al email anto@svg-ent.com
+Conmigo vas a poder anotar tus Invitaciones *GENERALES* para nuestros eventos con cortesias disponibles ! 🤩
 
 Eventos disponibles:
 
 {event_list_text}
 
 Responde con el número del evento en el que deseas anotar tus invitaciones.
+
+‼️Recorda que para Invitaciones VIP es necesaria la aprobacion de los perfiles, esas invitaciones las recibimos al email anto@svg-ent.com
 
 Si quieres saber tus invitados ya anotados en la lista escribe:
 "cuántos invitados" o "lista de invitados"
