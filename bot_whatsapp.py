@@ -74,6 +74,52 @@ def send_twilio_message(phone_number, message):
         logger.error(f"Error al enviar mensaje de Twilio a {destination_number}: {e}")
         return False
 
+def send_templated_message(phone_number, content_sid, content_variables=None):
+    """ Envía un mensaje de WhatsApp usando una plantilla de Twilio """
+    # Asegurarse que el número tenga el prefijo 'whatsapp:+'
+    # Los números de la hoja vienen normalizados (solo dígitos), ej: 54911...
+    if phone_number.startswith('whatsapp:'):
+        destination_number = phone_number
+    else:
+        destination_number = f"whatsapp:+{phone_number}"
+
+    # Asegurarse que el número de origen tenga el prefijo 'whatsapp:'
+    if not TWILIO_WHATSAPP_NUMBER:
+         logger.error("Número de WhatsApp de Twilio (TWILIO_WHATSAPP_NUMBER) no configurado.")
+         return {"success": False, "error": "Twilio WhatsApp number not configured"}
+    if not TWILIO_WHATSAPP_NUMBER.startswith('whatsapp:'):
+        origin_number = f"whatsapp:{TWILIO_WHATSAPP_NUMBER}"
+    else:
+        origin_number = TWILIO_WHATSAPP_NUMBER
+
+    try:
+        if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+            logger.error("Credenciales de Twilio (SID o Token) no configuradas.")
+            return {"success": False, "error": "Twilio credentials not configured"}
+
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+        message_data = {
+            'from_': origin_number,
+            'to': destination_number,
+            'content_sid': content_sid
+        }
+
+        if content_variables:
+            # Twilio espera las variables como un string JSON
+            message_data['content_variables'] = json.dumps(content_variables)
+
+        twilio_message = client.messages.create(**message_data)
+        logger.info(f"Mensaje de plantilla {content_sid} enviado a {destination_number}: {twilio_message.sid}")
+        return {"success": True, "sid": twilio_message.sid}
+    except Exception as e:
+        logger.error(f"Error al enviar mensaje de plantilla Twilio a {destination_number}: {e}")
+        # Intentar obtener más detalles del error de Twilio si es posible
+        error_details = str(e)
+        if hasattr(e, 'msg'):
+            error_details = e.msg
+        return {"success": False, "error": error_details}
+
 def infer_gender_llm(first_name):
     """
     Usa OpenAI (LLM) para inferir el género de un primer nombre.
@@ -2798,3 +2844,70 @@ Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744""
             send_twilio_message(sender_phone_raw, error_message) # Intentar enviar, puede fallar también
         # Devolver error 500 al webhook (Twilio reintentará)
         return jsonify({"status": "error", "message": "Internal server error"}), 500
+
+@app.route('/difusion', methods=['POST'])
+def broadcast_message():
+    """
+    Endpoint para enviar un mensaje de difusión usando una plantilla de Twilio.
+    Espera un JSON con:
+    {
+        "template_sid": "HX...",
+        "target_group": "all_prs" | "vips",
+        "template_variables": { "1": "valor1", ... } // opcional
+    }
+    """
+    # Para simplificar y por seguridad, por ahora no requerimos autenticación,
+    # pero en un futuro se podría añadir un token de API aquí.
+
+    if not request.is_json:
+        return jsonify({"status": "error", "message": "Request must be JSON"}), 400
+
+    data = request.get_json()
+    template_sid = data.get('template_sid')
+    target_group = data.get('target_group')
+    template_variables = data.get('template_variables') # opcional
+
+    if not template_sid or not target_group:
+        return jsonify({"status": "error", "message": "Faltan parámetros 'template_sid' o 'target_group'"}), 400
+
+    try:
+        sheet_conn = SheetsConnection()
+        phone_numbers = set() # Usar un set para evitar duplicados
+
+        if target_group == 'all_prs':
+            phone_numbers = sheet_conn.get_authorized_phones()
+            logger.info(f"Objetivo 'all_prs' seleccionado. Se enviará a {len(phone_numbers)} números.")
+        elif target_group == 'vips':
+            phone_numbers = sheet_conn.get_vip_phones()
+            logger.info(f"Objetivo 'vips' seleccionado. Se enviará a {len(phone_numbers)} números.")
+        else:
+            return jsonify({"status": "error", "message": f"Valor de 'target_group' inválido: '{target_group}'. Usa 'all_prs' o 'vips'."}), 400
+
+        if not phone_numbers:
+            logger.info(f"No se encontraron números de teléfono para el grupo '{target_group}'.")
+            return jsonify({"status": "success", "message": f"No se encontraron números para el grupo '{target_group}'."}), 200
+
+        # Enviar mensajes
+        results = {"sent": [], "failed": []}
+        for phone in phone_numbers:
+            # Los números ya vienen normalizados de las funciones get_..._phones()
+            result = send_templated_message(phone, template_sid, template_variables)
+            if result.get("success"):
+                results["sent"].append({"phone": phone, "sid": result.get("sid")})
+            else:
+                results["failed"].append({"phone": phone, "error": result.get("error")})
+
+        total_sent = len(results["sent"])
+        total_failed = len(results["failed"])
+        logger.info(f"Difusión completada. Enviados: {total_sent}, Fallidos: {total_failed}")
+
+        return jsonify({
+            "status": "complete",
+            "message": f"Proceso de difusión finalizado. Enviados: {total_sent}, Fallidos: {total_failed}",
+            "results": results
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error CRÍTICO en el endpoint de difusión: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({"status": "error", "message": "Ocurrió un error interno en el servidor."}), 500
