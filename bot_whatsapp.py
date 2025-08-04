@@ -254,9 +254,12 @@ def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
         # --- Crear las filas ---
         for guest_data in vip_guests_list:
             logger.info(f"DEBUG Add VIP Loop: Iterando, tipo={type(guest_data)}, item={guest_data}") # DEBUG
-            name = guest_data.get('nombre', '').strip()
+            # Combinar nombre y apellido si están separados
+            nombre = guest_data.get('nombre', '').strip()
+            apellido = guest_data.get('apellido', '').strip()
+            name = f"{nombre} {apellido}".strip() if apellido else nombre
             email = guest_data.get('email', '').strip()
-            parsed_gender = guest_data.get('genero') # Será 'Hombre', 'Mujer' o None
+            parsed_gender = guest_data.get('genero') # Será 'Masculino', 'Femenino' o None
 
             if name and email: # Validar nombre y email
                 # --- Determinar/Inferir Género ---
@@ -2667,17 +2670,17 @@ Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744""
                               logger.error(f"No se pudo crear/obtener hoja VIP para evento '{selected_event}'")
                               added_count = 0
 
-                              if added_count > 0:
-                                  response_text = f"✅ ¡Éxito! Se anotaron *{added_count}* invitado(s) VIP para el evento *{selected_event}* en la hoja 'VIP {selected_event}'."
-                                  # Resetear estado después de éxito
-                                  user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
-                              elif added_count == -1: # add_vip_guests_to_sheet devolvió -1 (hubo items pero todos inválidos)
-                                   response_text = f"⚠️ Intenté anotar invitados VIP para *{selected_event}*, pero no encontré datos válidos (ej. email o nombre faltante) en tu lista. Revisa el formato y los datos. Intenta de nuevo o escribe 'cancelar'."
-                                   # Mantener estado para reintento
-                              else: # added_count == 0 (Error interno en add_vip_guests_to_sheet o no se añadieron filas)
-                                   response_text = f"❌ Hubo un error al guardar los invitados VIP en la hoja. Por favor, intenta de nuevo más tarde o contacta al administrador."
-                                   # Resetear por seguridad en caso de error de escritura
-                                   user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+                          if added_count > 0:
+                              response_text = f"✅ ¡Éxito! Se anotaron *{added_count}* invitado(s) VIP para el evento *{selected_event}* en la hoja 'VIP {selected_event}'."
+                              # Resetear estado después de éxito
+                              user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+                          elif added_count == -1: # add_vip_guests_to_sheet devolvió -1 (hubo items pero todos inválidos)
+                               response_text = f"⚠️ Intenté anotar invitados VIP para *{selected_event}*, pero no encontré datos válidos (ej. email o nombre faltante) en tu lista. Revisa el formato y los datos. Intenta de nuevo o escribe 'cancelar'."
+                               # Mantener estado para reintento
+                          else: # added_count == 0 (Error interno en add_vip_guests_to_sheet o no se añadieron filas)
+                               response_text = f"❌ Hubo un error al guardar los invitados VIP en la hoja. Por favor, intenta de nuevo más tarde o contacta al administrador."
+                               # Resetear por seguridad en caso de error de escritura
+                               user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
 
 
                   elif selected_guest_type == 'Normal':
