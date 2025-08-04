@@ -169,6 +169,49 @@ def infer_gender_llm(first_name):
         return "Desconocido"
 
 
+def get_or_create_vip_event_sheet(sheet_conn, event_name):
+    """
+    Obtiene o crea una hoja VIP específica para un evento.
+    
+    Args:
+        sheet_conn: Instancia de SheetsConnection.
+        event_name (str): Nombre del evento.
+        
+    Returns:
+        worksheet: Objeto de hoja de Google Sheets o None si hay error.
+    """
+    try:
+        vip_sheet_name = f"VIP {event_name}"
+        logger.info(f"Intentando obtener/crear hoja VIP: '{vip_sheet_name}'")
+        
+        # Intentar obtener la hoja existente
+        try:
+            vip_event_sheet = sheet_conn.spreadsheet.worksheet(vip_sheet_name)
+            logger.info(f"Hoja VIP '{vip_sheet_name}' ya existe.")
+            return vip_event_sheet
+        except gspread.exceptions.WorksheetNotFound:
+            logger.info(f"Hoja VIP '{vip_sheet_name}' no existe, creándola...")
+            
+            # Crear nueva hoja VIP para este evento
+            expected_headers = ['Nombre', 'Email', 'Ingreso', 'PR']
+            vip_event_sheet = sheet_conn.spreadsheet.add_worksheet(
+                title=vip_sheet_name, 
+                rows=1, 
+                cols=len(expected_headers)
+            )
+            
+            # Añadir encabezados
+            vip_event_sheet.update(
+                f'A1:{gspread.utils.rowcol_to_a1(1, len(expected_headers))}', 
+                [expected_headers]
+            )
+            logger.info(f"Hoja VIP '{vip_sheet_name}' creada con encabezados: {expected_headers}")
+            return vip_event_sheet
+            
+    except Exception as e:
+        logger.error(f"Error al obtener/crear hoja VIP para evento '{event_name}': {e}")
+        return None
+
 def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
     """
     Agrega invitados VIP (nombre, email, género) a la hoja 'Invitados VIP'.
@@ -2459,34 +2502,12 @@ Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744""
                           # Ya no necesitamos available_events en el siguiente estado, limpiamos.
                           user_status['available_events'] = []
 
-                          if is_vip:
-                              # Preguntar tipo de invitado (VIP o Normal)
-                              response_text = f"Evento *{selected_event}* seleccionado. ✨\n¿Quieres añadir invitados *Generales* (normales) o *VIP*? Responde 'Normal' o 'VIP'."
-                              user_status['state'] = STATE_AWAITING_GUEST_TYPE
-                              user_status['guest_type'] = None # Limpiar por siaca
-                              user_states[sender_phone_normalized] = user_status # Actualizar estado en memoria global
-                          else:
-                              # Usuario no VIP, ir directo a pedir datos normales
-                              response_text = (
-                                  f"Perfecto, evento seleccionado: *{selected_event}*.\n\n"
-                                  "Ahora envíame la lista en formato Nombres primero, luego una línea vacía, y luego los Emails.\n\n"
-                                  "Ejemplo:\n\n"
-                                  "Hombres: \n"
-                                  "Nombre Apellido\n"
-                                  "Nombre Apellido\n\n" # Línea vacía separadora
-                                  "email1@ejemplo.com\n"
-                                  "email2@ejemplo.com\n\n"
-                                  "Mujeres: \n"
-                                  "Nombre Apellido\n"
-                                  "Nombre Apellido\n\n" # Línea vacía separadora
-                                  "email1@ejemplo.com\n"
-                                  "email2@ejemplo.com\n\n"
-                                  "⚠️ La cantidad de nombres y emails debe coincidir.\n"
-                                  "Escribe 'cancelar' si quieres cambiar de evento."
-                              )
-                              user_status['state'] = STATE_AWAITING_GUEST_DATA
-                              user_status['guest_type'] = 'Normal' # Guardar tipo por defecto
-                              user_states[sender_phone_normalized] = user_status # Actualizar estado
+                          # Preguntar tipo de invitado para TODOS los usuarios
+                          response_text = f"Evento *{selected_event}* seleccionado. ✨\n\nResponde solo con el numero:\n1) General\n2) VIP"
+                          user_status['state'] = STATE_AWAITING_GUEST_TYPE
+                          user_status['guest_type'] = None # Limpiar por si acaso
+                          user_states[sender_phone_normalized] = user_status # Actualizar estado en memoria global
+                          # Este código se eliminó - ahora todos pasan por STATE_AWAITING_GUEST_TYPE
                       else: # Número fuera de rango
                           event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
                           response_text = f"❌ Número '{incoming_msg}' fuera de rango. Por favor, elige un número válido de la lista:\n\n{event_list_text}"
@@ -2511,38 +2532,52 @@ Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744""
                  response_text = f"Selección de tipo cancelada para el evento *{selected_event}*. Puedes enviar cualquier mensaje para empezar de nuevo."
                  user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Resetear
              else:
-                  choice_lower = incoming_msg.lower()
-                  if choice_lower == 'vip':
-                      logger.info(f"Usuario VIP {sender_phone_normalized} eligió añadir tipo VIP para evento {selected_event}.")
-                      user_status['state'] = STATE_AWAITING_GUEST_DATA
-                      user_status['guest_type'] = 'VIP'
-                      response_text = (
-                          f"Ok, vas a añadir invitados *VIP* para *{selected_event}*.\n\n"
-                          "Envíame la lista en formato Nombres primero, luego una línea vacía, y luego los Emails.\n\n"
-                          "Ejemplo:\n"
-                          "Carlos VIP\n"
-                          "Ana VIP\n\n" # Línea vacía separadora
-                          "carlos.vip@mail.com\n"
-                          "ana.vip@mail.com\n\n"
-                          "⚠️ La cantidad de nombres y emails debe coincidir.\n"
-                          "Escribe 'cancelar' para volver."
-                      )
-                      user_states[sender_phone_normalized] = user_status # Actualizar estado
-                  elif choice_lower in ['normal', 'normales', 'general', 'generales']:
-                      logger.info(f"Usuario VIP {sender_phone_normalized} eligió añadir tipo Normal para evento {selected_event}.")
-                      user_status['state'] = STATE_AWAITING_GUEST_DATA
-                      user_status['guest_type'] = 'Normal'
-                      response_text = (
-                          f"Ok, vas a añadir invitados *Generales* para *{selected_event}*.\n\n"
-                          "Envíame la lista en formato Nombres primero, luego una línea vacía, y luego los Emails.\n\n"
-                          "Ejemplo:\n"
-                          "Juan Perez\n"
-                          "Maria Garcia\n\n" # Línea vacía separadora
-                          "juan.p@ejemplo.com\n"
-                          "maria.g@ejemplo.com\n\n"
-                          "⚠️ La cantidad de nombres y emails debe coincidir.\n"
-                          "Escribe 'cancelar' para volver."
-                      )
+                  try:
+                      choice_number = int(incoming_msg.strip())
+                      if choice_number == 2:  # VIP
+                          logger.info(f"Usuario {sender_phone_normalized} eligió añadir tipo VIP para evento {selected_event}.")
+                          user_status['state'] = STATE_AWAITING_GUEST_DATA
+                          user_status['guest_type'] = 'VIP'
+                          response_text = (
+                              f"Ok, vas a añadir invitados *VIP* para *{selected_event}*.\n\n"
+                              "Envíame la lista en formato Nombres primero, luego una línea vacía, y luego los Emails.\n\n"
+                              "Ejemplo:\n"
+                              "Carlos VIP\n"
+                              "Ana VIP\n\n" # Línea vacía separadora
+                              "carlos.vip@mail.com\n"
+                              "ana.vip@mail.com\n\n"
+                              "⚠️ La cantidad de nombres y emails debe coincidir.\n"
+                              "Escribe 'cancelar' para volver."
+                          )
+                          user_states[sender_phone_normalized] = user_status # Actualizar estado
+                      elif choice_number == 1:  # General
+                          logger.info(f"Usuario {sender_phone_normalized} eligió añadir tipo General para evento {selected_event}.")
+                          user_status['state'] = STATE_AWAITING_GUEST_DATA
+                          user_status['guest_type'] = 'Normal'
+                          response_text = (
+                              f"Ok, vas a añadir invitados *Generales* para *{selected_event}*.\n\n"
+                              "Envíame la lista en formato Nombres primero, luego una línea vacía, y luego los Emails.\n\n"
+                              "Ejemplo:\n\n"
+                              "Hombres: \n"
+                              "Juan Perez\n"
+                              "Carlos Lopez\n\n" # Línea vacía separadora
+                              "juan.p@ejemplo.com\n"
+                              "carlos.l@ejemplo.com\n\n"
+                              "Mujeres: \n"
+                              "Maria Garcia\n"
+                              "Ana Martinez\n\n" # Línea vacía separadora
+                              "maria.g@ejemplo.com\n"
+                              "ana.m@ejemplo.com\n\n"
+                              "⚠️ La cantidad de nombres y emails debe coincidir.\n"
+                              "Escribe 'cancelar' para volver."
+                          )
+                          user_states[sender_phone_normalized] = user_status # Actualizar estado
+                      else:  # Número fuera de rango
+                          response_text = f"❌ Número '{incoming_msg}' fuera de rango. Responde solo con el numero:\n1) General\n2) VIP"
+                          # Mantener estado AWAITING_GUEST_TYPE
+                  except ValueError:  # No envió un número válido
+                      response_text = f"Por favor, responde solo con el numero:\n1) General\n2) VIP"
+                      # Mantener estado AWAITING_GUEST_TYPE
                       user_states[sender_phone_normalized] = user_status # Actualizar estado
                   else:
                       response_text = f"No entendí '{incoming_msg}'. Por favor, responde 'Normal' o 'VIP' para indicar qué tipo de invitados quieres añadir para *{selected_event}*."
@@ -2619,13 +2654,19 @@ Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744""
                                   logger.error(f"Error buscando nombre PR VIP para columna 'PR': {vip_map_err}")
 
 
-                              # Añadir a la hoja VIP
-                              # add_vip_guests_to_sheet necesita la hoja, la lista parseada y el nombre del PR
-                              # add_vip_guests_to_sheet ya maneja la validación final y loggea omisiones
-                              added_count = add_vip_guests_to_sheet(vip_guest_sheet, parsed_vip_list, vip_pr_name)
+                              # Obtener o crear hoja VIP específica para este evento
+                              vip_event_sheet = get_or_create_vip_event_sheet(sheet_conn, selected_event)
+                              
+                              if vip_event_sheet:
+                                  # Añadir a la hoja VIP específica del evento
+                                  # add_vip_guests_to_sheet ya maneja la validación final y loggea omisiones
+                                  added_count = add_vip_guests_to_sheet(vip_event_sheet, parsed_vip_list, vip_pr_name)
+                              else:
+                                  logger.error(f"No se pudo crear/obtener hoja VIP para evento '{selected_event}'")
+                                  added_count = 0
 
                               if added_count > 0:
-                                  response_text = f"✅ ¡Éxito! Se anotaron *{added_count}* invitado(s) VIP para el evento *{selected_event}*."
+                                  response_text = f"✅ ¡Éxito! Se anotaron *{added_count}* invitado(s) VIP para el evento *{selected_event}* en la hoja 'VIP {selected_event}'."
                                   # Resetear estado después de éxito
                                   user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
                               elif added_count == -1: # add_vip_guests_to_sheet devolvió -1 (hubo items pero todos inválidos)
