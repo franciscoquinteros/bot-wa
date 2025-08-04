@@ -193,7 +193,7 @@ def get_or_create_vip_event_sheet(sheet_conn, event_name):
             logger.info(f"Hoja VIP '{vip_sheet_name}' no existe, creándola...")
             
             # Crear nueva hoja VIP para este evento
-            expected_headers = ['Nombre', 'Email', 'Ingreso', 'PR']
+            expected_headers = ['Nombre', 'Email', 'Instagram', 'Ingreso', 'PR']
             vip_event_sheet = sheet_conn.spreadsheet.add_worksheet(
                 title=vip_sheet_name, 
                 rows=1, 
@@ -239,8 +239,8 @@ def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
 
     try:
         logger.info(f"DEBUG Add VIP: Recibido tipo={type(vip_guests_list)}, contenido={vip_guests_list}") # DEBUG
-        # --- Verificar/Crear encabezados (Nombre | Email | Ingreso | PR) ---
-        expected_headers = ['Nombre', 'Email', 'Ingreso', 'PR'] # <-- NUEVOS HEADERS
+        # --- Verificar/Crear encabezados (Nombre | Email | Instagram | Ingreso | PR) ---
+        expected_headers = ['Nombre', 'Email', 'Instagram', 'Ingreso', 'PR'] # <-- NUEVOS HEADERS
         try:
             headers = sheet.row_values(1)
         except gspread.exceptions.APIError as api_err:
@@ -259,9 +259,10 @@ def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
             apellido = guest_data.get('apellido', '').strip()
             name = f"{nombre} {apellido}".strip() if apellido else nombre
             email = guest_data.get('email', '').strip()
+            instagram = guest_data.get('instagram', '').strip()
             parsed_gender = guest_data.get('genero') # Será 'Masculino', 'Femenino' o None
 
-            if name and email: # Validar nombre y email
+            if name and email and instagram: # Validar nombre, email e Instagram
                 # --- Determinar/Inferir Género ---
                 # --- Determinar/Inferir Género ---
                 final_gender = "Desconocido" # Valor por defecto
@@ -281,11 +282,11 @@ def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
                          logger.warning(f"No se pudo inferir género para nombre vacío.")
                          final_gender = "Desconocido" # Asegurar default si el nombre estaba vacío
 
-                # Añadir fila con Nombre, Email, Género (Ingreso), PR
-                rows_to_add.append([name, email, final_gender, pr_name]) # <-- NUEVO FORMATO FILA
+                # Añadir fila con Nombre, Email, Instagram, Género (Ingreso), PR
+                rows_to_add.append([name, email, instagram, final_gender, pr_name]) # <-- NUEVO FORMATO FILA
                 added_count += 1
             else:
-                logger.warning(f"Se omitió invitado VIP (nombre='{name}', email='{email}') por datos faltantes. PR: {pr_name}.")
+                logger.warning(f"Se omitió invitado VIP (nombre='{name}', email='{email}', instagram='{instagram}') por datos faltantes. PR: {pr_name}.")
 
         # --- Agregar a la hoja ---
         if rows_to_add:
@@ -1720,6 +1721,142 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
 
     
 # Asegúrate que esta es la ÚNICA definición de parse_vip_guest_list
+def parse_vip_guest_list_with_instagram(message_body):
+    """
+    Parsea formato VIP con Instagram: Nombres -> Emails -> Instagram Links
+    Detecta encabezados opcionales 'Hombres:'/'Mujeres:'. Permite categorías vacías.
+    
+    Args:
+        message_body (str): Mensaje del usuario con formato N->E->I
+        
+    Returns:
+        tuple: (list, dict) donde:
+            - list: Lista de diccionarios con info estructurada [{'nombre': n, 'apellido': a, 'email': e, 'instagram': i, 'genero': g}, ...]
+            - dict: Información del error si ocurrió, o None si no hubo errores
+    """
+    guests = []
+    error_info = None
+    
+    # Dividir por líneas y limpiar
+    lines = [line.strip() for line in message_body.split('\n') if line.strip()]
+    
+    # Usaremos listas separadas por categoría para nombres, emails e Instagram
+    data_by_category = {} # Ejemplo: {'Hombres': {'names': [], 'emails': [], 'instagrams': []}, 'Mujeres': {...}}
+    category_map = {"Hombres": "Masculino", "Mujeres": "Femenino"}
+
+    current_category_key = None # Empezar sin categoría definida
+    parsing_mode = 'category_or_names' # Estados: category_or_names, names, emails, instagrams
+
+    logger.info("Iniciando extracción VIP con Instagram (Nombres -> Emails -> Instagram)...")
+
+    for line in lines:
+        if not line:
+            continue # Ignorar líneas vacías
+
+        # --- Detectar Categorías ---
+        is_category = False
+        potential_category_key = None
+        
+        # Patrones flexibles para categorías masculinas
+        if re.match(r'^hombres?\s*:?\s*$', line, re.IGNORECASE):
+            potential_category_key = "Hombres"
+            is_category = True
+        # Patrones flexibles para categorías femeninas  
+        elif re.match(r'^mujeres?\s*:?\s*$', line, re.IGNORECASE):
+            potential_category_key = "Mujeres"
+            is_category = True
+        
+        if is_category:
+            current_category_key = potential_category_key
+            parsing_mode = 'names'
+            # Inicializar categoría si no existe
+            if current_category_key not in data_by_category:
+                data_by_category[current_category_key] = {'names': [], 'emails': [], 'instagrams': []}
+            logger.debug(f"Detectado encabezado de categoría: '{current_category_key}'")
+            continue
+
+        # --- Detectar Emails ---
+        is_email = '@' in line and '.' in line.split('@')[-1] and len(line.split('@')[0]) > 0
+        
+        if is_email and parsing_mode in ['names', 'emails']:
+            parsing_mode = 'emails'
+            # Asegurarse que tenemos una categoría
+            if current_category_key is None:
+                current_category_key = "Default"
+                if current_category_key not in data_by_category:
+                    data_by_category[current_category_key] = {'names': [], 'emails': [], 'instagrams': []}
+            
+            if re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", line):
+                data_by_category[current_category_key]['emails'].append(line)
+            continue
+
+        # --- Detectar Instagram Links ---
+        is_instagram = ('instagram.com' in line.lower() or 'instagram' in line.lower() or 
+                       line.startswith('@') or line.startswith('http'))
+        
+        if is_instagram and parsing_mode in ['emails', 'instagrams']:
+            parsing_mode = 'instagrams'
+            # Asegurarse que tenemos una categoría
+            if current_category_key is None:
+                current_category_key = "Default"
+                if current_category_key not in data_by_category:
+                    data_by_category[current_category_key] = {'names': [], 'emails': [], 'instagrams': []}
+            
+            data_by_category[current_category_key]['instagrams'].append(line)
+            continue
+
+        # --- Procesar Nombres ---
+        if parsing_mode in ['category_or_names', 'names']:
+            parsing_mode = 'names'
+            # Asegurarse que tenemos una categoría
+            if current_category_key is None:
+                current_category_key = "Default"
+                if current_category_key not in data_by_category:
+                    data_by_category[current_category_key] = {'names': [], 'emails': [], 'instagrams': []}
+            
+            # Validar que parece un nombre válido
+            if re.match(r"^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s'.]+$", line) and len(line) > 1:
+                data_by_category[current_category_key]['names'].append(line)
+            continue
+
+    # --- Procesar datos por categoría ---
+    for category_key, category_data in data_by_category.items():
+        names = category_data['names']
+        emails = category_data['emails']
+        instagrams = category_data['instagrams']
+        
+        # Verificar balance
+        if len(names) != len(emails) or len(names) != len(instagrams):
+            error_info = {
+                'error_type': 'desbalance',
+                'category': category_key,
+                'names_count': len(names),
+                'emails_count': len(emails),
+                'instagrams_count': len(instagrams)
+            }
+            logger.error(f"Desbalance en categoría '{category_key}': {len(names)} nombres, {len(emails)} emails, {len(instagrams)} instagrams")
+            return [], error_info
+        
+        # Crear invitados
+        for i in range(len(names)):
+            name_parts = names[i].split()
+            nombre = name_parts[0] if name_parts else ""
+            apellido = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+            
+            guest = {
+                'nombre': nombre,
+                'apellido': apellido,
+                'email': emails[i],
+                'instagram': instagrams[i],
+                'genero': category_map.get(category_key, None)
+            }
+            guests.append(guest)
+    
+    if not guests and lines:  # Si había líneas pero no se procesaron invitados
+        error_info = {'error_type': 'no_valid_pairs'}
+        
+    return guests, error_info
+
 def parse_vip_guest_list(message_body):
     """
     Parsea formato VIP (Nombres->Emails) detectando encabezados opcionales
@@ -2543,18 +2680,22 @@ Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744""
                           user_status['guest_type'] = 'VIP'
                           response_text = (
                               f"Perfecto, evento seleccionado: *{selected_event}*.\n\n"
-                              "Ahora envíame la lista en formato Nombres primero, luego una línea vacía, y luego los Emails.\n\n"
+                              "Ahora envíame la lista en formato Nombres primero, luego una línea vacía, luego los Emails y finalmente el link de instagram.\n\n"
                               "Ejemplo:\n\n"
                               "Hombres: \n"
                               "Nombre Apellido\n"
                               "Nombre Apellido\n\n" # Línea vacía separadora
                               "email1@ejemplo.com\n"
                               "email2@ejemplo.com\n\n"
+                              "link instagram persona 1\n"
+                              "link instagram persona 2\n\n"
                               "Mujeres: \n"
                               "Nombre Apellido\n"
                               "Nombre Apellido\n\n" # Línea vacía separadora
                               "email1@ejemplo.com\n"
                               "email2@ejemplo.com\n\n"
+                              "link instagram persona 1\n"
+                              "link instagram persona 2\n\n"
                               "⚠️ La cantidad de nombres y emails debe coincidir.\n"
                               "Escribe 'cancelar' si quieres cambiar de evento."
                           )
@@ -2610,11 +2751,10 @@ Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744""
                   if selected_guest_type == 'VIP':
                       logger.info(f"Procesando datos invitados VIP para '{selected_event}' de {sender_phone_normalized}")
                       
-                      # Usar el mismo parser que invitados normales
-                      logger.info("Usando extractor para formato VIP (mismo que Normal: Nombres -> Emails)...")
-                      data_lines_list = incoming_msg.split('\n')
-                      # extract_guests_from_split_format devuelve (lista_invitados, error_info)
-                      structured_guests, error_info_parsing = extract_guests_from_split_format(data_lines_list)
+                      # Usar parser específico VIP con Instagram
+                      logger.info("Usando extractor para formato VIP (Nombres -> Emails -> Instagram)...")
+                      # parse_vip_guest_list_with_instagram devuelve (lista_invitados, error_info)
+                      structured_guests, error_info_parsing = parse_vip_guest_list_with_instagram(incoming_msg)
 
                       # Verificar si hubo error de formato grave O si la lista parseada está vacía a pesar de haber texto original
                       if not structured_guests:
@@ -2625,18 +2765,19 @@ Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744""
                                response_text = (f"⚠️ Formato incorrecto.\n"
                                                 f"Detecté un desbalance en la categoría '{error_info_parsing.get('category', 'desconocida')}':\n"
                                                 f"• {error_info_parsing.get('names_count', 'N/A')} nombres\n"
-                                                f"• {error_info_parsing.get('emails_count', 'N/A')} emails\n\n"
-                                                f"La cantidad debe ser la misma *en cada categoría con datos*. Revisa tu lista, separa nombres y emails con una línea vacía, e intenta de nuevo o 'cancelar'.")
+                                                f"• {error_info_parsing.get('emails_count', 'N/A')} emails\n"
+                                                f"• {error_info_parsing.get('instagrams_count', 'N/A')} links de instagram\n\n"
+                                                f"La cantidad debe ser la misma para nombres, emails e instagram *en cada categoría con datos*. Revisa tu lista e intenta de nuevo o 'cancelar'.")
                           elif error_info_parsing and error_info_parsing.get('error_type') in ['no_valid_categories', 'empty_message', 'incomplete_category', 'no_valid_pairs']:
-                               response_text = ("⚠️ No pude encontrar nombres y emails válidos en el formato esperado (Nombres -> Emails separados por línea vacía, opcionalmente por categorías).\n"
+                               response_text = ("⚠️ No pude encontrar nombres, emails e Instagram válidos en el formato esperado (Nombres -> Emails -> Instagram separados por líneas vacías, opcionalmente por categorías).\n"
                                                 "Revisa el ejemplo e intenta de nuevo o escribe 'cancelar'.")
                           # Si no hubo un error_info_parsing específico pero la lista parseada estaba vacía, es un error de datos.
                           elif error_info_parsing is None and incoming_msg.strip(): # Asegurarse que el mensaje original no estaba vacío
-                               response_text = ("⚠️ No encontré invitados con nombre y email válidos en tu lista. Revisa el formato y los datos.\n"
-                                                "Asegúrate que sigue el formato Nombres -> Emails (separados por línea vacía) y que cada nombre tiene un email.\n"
+                               response_text = ("⚠️ No encontré invitados con nombre, email e Instagram válidos en tu lista. Revisa el formato y los datos.\n"
+                                                "Asegúrate que sigue el formato Nombres -> Emails -> Instagram (separados por líneas vacías) y que cada nombre tiene un email e Instagram.\n"
                                                 "Intenta de nuevo o escribe 'cancelar'.")
                           else: # Fallback genérico si no se pudo determinar el error específico
-                               response_text = ("⚠️ No pude procesar tu lista. Asegúrate que sigue el formato Nombres -> Emails (separados por línea vacía).\n"
+                               response_text = ("⚠️ No pude procesar tu lista. Asegúrate que sigue el formato Nombres -> Emails -> Instagram (separados por líneas vacías).\n"
                                                 "Intenta de nuevo o escribe 'cancelar'.")
                           
                           # Mantener estado AWAITING_GUEST_DATA para reintento si hubo un problema de parseo/datos
