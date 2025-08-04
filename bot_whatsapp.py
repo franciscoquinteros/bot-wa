@@ -345,8 +345,11 @@ def add_guests_to_unified_sheet(sheet, guests_list, pr_name, guest_type):
                     else:
                          gender_for_tipo = "DESCONOCIDO"
 
-                # Crear el valor TIPO: "GENERAL HOMBRE", "VIP MUJER", etc.
-                tipo_value = f"{guest_type.upper()} {gender_for_tipo}"
+                # Crear el valor TIPO: "HOMBRE GENERAL", "MUJER VIP", etc.
+                if guest_type.upper() == 'NORMAL':
+                    tipo_value = f"{gender_for_tipo} GENERAL"
+                else:  # VIP
+                    tipo_value = f"{gender_for_tipo} VIP"
 
                 # Añadir fila con Nombre, Email, Instagram, TIPO, PR, Timestamp
                 row_data = [name, email, instagram, tipo_value, pr_name, timestamp]
