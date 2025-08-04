@@ -169,6 +169,50 @@ def infer_gender_llm(first_name):
         return "Desconocido"
 
 
+def get_or_create_unified_event_sheet(sheet_conn, event_name):
+    """
+    Obtiene o crea una hoja unificada para un evento que contiene tanto invitados generales como VIP.
+    
+    Args:
+        sheet_conn: Instancia de SheetsConnection.
+        event_name (str): Nombre del evento.
+        
+    Returns:
+        worksheet: Objeto de hoja de Google Sheets o None si hay error.
+    """
+    try:
+        unified_sheet_name = event_name  # Usar directamente el nombre del evento
+        logger.info(f"Intentando obtener/crear hoja unificada: '{unified_sheet_name}'")
+        
+        # Intentar obtener la hoja existente
+        try:
+            unified_event_sheet = sheet_conn.spreadsheet.worksheet(unified_sheet_name)
+            logger.info(f"Hoja unificada '{unified_sheet_name}' ya existe.")
+            return unified_event_sheet
+        except gspread.exceptions.WorksheetNotFound:
+            logger.info(f"Hoja unificada '{unified_sheet_name}' no existe, creándola...")
+            
+            # Crear nueva hoja unificada para este evento
+            # Incluye columnas para ambos tipos: General (sin Instagram) y VIP (con Instagram)
+            expected_headers = ['Nombre', 'Email', 'Instagram', 'TIPO', 'PR', 'Timestamp']
+            unified_event_sheet = sheet_conn.spreadsheet.add_worksheet(
+                title=unified_sheet_name, 
+                rows=1, 
+                cols=len(expected_headers)
+            )
+            
+            # Añadir encabezados
+            unified_event_sheet.update(
+                f'A1:{gspread.utils.rowcol_to_a1(1, len(expected_headers))}', 
+                [expected_headers]
+            )
+            logger.info(f"Hoja unificada '{unified_sheet_name}' creada con encabezados: {expected_headers}")
+            return unified_event_sheet
+            
+    except Exception as e:
+        logger.error(f"Error al obtener/crear hoja unificada para evento '{event_name}': {e}")
+        return None
+
 def get_or_create_vip_event_sheet(sheet_conn, event_name):
     """
     Obtiene o crea una hoja VIP específica para un evento.
@@ -211,6 +255,123 @@ def get_or_create_vip_event_sheet(sheet_conn, event_name):
     except Exception as e:
         logger.error(f"Error al obtener/crear hoja VIP para evento '{event_name}': {e}")
         return None
+
+def add_guests_to_unified_sheet(sheet, guests_list, pr_name, guest_type):
+    """
+    Agrega invitados (General o VIP) a la hoja unificada del evento.
+    
+    Args:
+        sheet: Objeto de hoja de Google Sheets unificada.
+        guests_list (list): Lista de diccionarios con info de invitados.
+        pr_name (str): Nombre del PR que los está añadiendo.
+        guest_type (str): 'VIP' o 'Normal' para determinar el tipo.
+        
+    Returns:
+        int: Número de invitados añadidos. 0 si hay error o no se añadió nada.
+             -1 si hubo datos pero se filtraron todos por inválidos.
+    """
+    if not sheet:
+        logger.error("Intento de añadir invitados pero la hoja unificada no es válida.")
+        return 0
+    if not guests_list:
+        logger.warning("Se llamó a add_guests_to_unified_sheet con lista vacía o inválida.")
+        return 0
+
+    rows_to_add = []
+    added_count = 0
+    original_count = len(guests_list)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        logger.info(f"DEBUG Add Unified: Recibido tipo={type(guests_list)}, contenido={guests_list}, guest_type={guest_type}")
+        
+        # --- Verificar/Crear encabezados (Nombre | Email | Instagram | TIPO | PR | Timestamp) ---
+        expected_headers = ['Nombre', 'Email', 'Instagram', 'TIPO', 'PR', 'Timestamp']
+        try:
+            headers = sheet.row_values(1)
+        except gspread.exceptions.APIError as api_err:
+             if "exceeds grid limits" in str(api_err): 
+                 headers = []
+             else: 
+                 raise api_err
+
+        # Actualizar encabezados si es necesario
+        if headers != expected_headers:
+            logger.info(f"Actualizando/Creando encabezados en hoja unificada: {expected_headers}")
+            sheet.update(f'A1:{gspread.utils.rowcol_to_a1(1, len(expected_headers))}', [expected_headers])
+
+        # --- Crear las filas ---
+        for guest_data in guests_list:
+            logger.info(f"DEBUG Add Unified Loop: Iterando, tipo={type(guest_data)}, item={guest_data}")
+            
+            # Combinar nombre y apellido si están separados
+            nombre = guest_data.get('nombre', '').strip()
+            apellido = guest_data.get('apellido', '').strip()
+            name = f"{nombre} {apellido}".strip() if apellido else nombre
+            email = guest_data.get('email', '').strip()
+            instagram = guest_data.get('instagram', '').strip() if guest_type == 'VIP' else ""  # Solo VIP tiene Instagram
+            parsed_gender = guest_data.get('genero') # Será 'Masculino', 'Femenino' o None
+
+            # Validar datos requeridos según el tipo
+            valid_data = False
+            if guest_type == 'VIP':
+                valid_data = name and email and instagram  # VIP requiere Instagram
+            else:
+                valid_data = name and email  # Normal solo requiere nombre y email
+
+            if valid_data:
+                # --- Determinar/Inferir Género ---
+                final_gender = "Desconocido"
+                if parsed_gender:
+                    # Convertir género a formato esperado para TIPO
+                    if parsed_gender.lower() in ['masculino', 'hombre']:
+                        gender_for_tipo = "HOMBRE"
+                    elif parsed_gender.lower() in ['femenino', 'mujer']:
+                        gender_for_tipo = "MUJER"
+                    else:
+                        gender_for_tipo = "DESCONOCIDO"
+                else:
+                    # Intentar inferir si no vino del encabezado
+                    first_name = name.split()[0] if name else ""
+                    if first_name:
+                         # Llamar a la función de IA
+                         inferred = infer_gender_llm(first_name)
+                         if inferred.lower() in ['hombre', 'masculino']:
+                             gender_for_tipo = "HOMBRE"
+                         elif inferred.lower() in ['mujer', 'femenino']:
+                             gender_for_tipo = "MUJER"
+                         else:
+                             gender_for_tipo = "DESCONOCIDO"
+                    else:
+                         gender_for_tipo = "DESCONOCIDO"
+
+                # Crear el valor TIPO: "GENERAL HOMBRE", "VIP MUJER", etc.
+                tipo_value = f"{guest_type.upper()} {gender_for_tipo}"
+
+                # Añadir fila con Nombre, Email, Instagram, TIPO, PR, Timestamp
+                row_data = [name, email, instagram, tipo_value, pr_name, timestamp]
+                rows_to_add.append(row_data)
+                added_count += 1
+            else:
+                logger.warning(f"Se omitió invitado (nombre='{name}', email='{email}', instagram='{instagram}', tipo='{guest_type}') por datos faltantes. PR: {pr_name}.")
+
+        # --- Agregar a la hoja ---
+        if rows_to_add:
+            sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
+            logger.info(f"Agregados {added_count} invitados {guest_type} a hoja unificada por PR '{pr_name}'.")
+            return added_count if added_count == original_count else -1
+        else:
+            logger.warning(f"No se generaron filas válidas para añadir por {pr_name}.")
+            return -1 if original_count > 0 else 0
+
+    except gspread.exceptions.APIError as e:
+        logger.error(f"Error API Google Sheets al agregar filas a hoja unificada: {e}")
+        return 0
+    except Exception as e:
+        logger.error(f"Error inesperado en add_guests_to_unified_sheet: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return 0
 
 def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
     """
@@ -2799,20 +2960,18 @@ Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744""
                           except Exception as map_err:
                               logger.error(f"Error buscando nombre PR: {map_err}")
 
-                          # Obtener o crear hoja VIP específica para este evento
-                          vip_event_sheet = get_or_create_vip_event_sheet(sheet_conn, selected_event)
+                          # Obtener o crear hoja unificada para este evento
+                          unified_event_sheet = get_or_create_unified_event_sheet(sheet_conn, selected_event)
                           
-                          if vip_event_sheet:
-                              # Convertir structured_guests al formato que espera add_vip_guests_to_sheet
-                              # structured_guests tiene formato: [{'nombre': n, 'email': e, 'genero': g}, ...]
-                              # add_vip_guests_to_sheet espera el mismo formato
-                              added_count = add_vip_guests_to_sheet(vip_event_sheet, structured_guests, pr_name)
+                          if unified_event_sheet:
+                              # Usar la función unificada para guardar invitados VIP
+                              added_count = add_guests_to_unified_sheet(unified_event_sheet, structured_guests, pr_name, 'VIP')
                           else:
-                              logger.error(f"No se pudo crear/obtener hoja VIP para evento '{selected_event}'")
+                              logger.error(f"No se pudo crear/obtener hoja unificada para evento '{selected_event}'")
                               added_count = 0
 
                           if added_count > 0:
-                              response_text = f"✅ ¡Éxito! Se anotaron *{added_count}* invitado(s) VIP para el evento *{selected_event}* en la hoja 'VIP {selected_event}'."
+                              response_text = f"✅ ¡Éxito! Se anotaron *{added_count}* invitado(s) VIP para el evento *{selected_event}*."
                               # Resetear estado después de éxito
                               user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
                           elif added_count == -1: # add_vip_guests_to_sheet devolvió -1 (hubo items pero todos inválidos)
@@ -2827,10 +2986,10 @@ Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744""
                   elif selected_guest_type == 'Normal':
                       logger.info(f"Procesando datos invitados Normales para '{selected_event}' de {sender_phone_normalized}")
 
-                      # Obtener la hoja específica del evento Normal
-                      event_sheet = sheet_conn.get_sheet_by_event_name(selected_event)
-                      if not event_sheet:
-                          logger.error(f"No se pudo obtener o crear la hoja para el evento normal '{selected_event}'.")
+                      # Obtener la hoja unificada del evento
+                      unified_event_sheet = get_or_create_unified_event_sheet(sheet_conn, selected_event)
+                      if not unified_event_sheet:
+                          logger.error(f"No se pudo obtener o crear la hoja unificada para el evento '{selected_event}'.")
                           response_text = f"❌ Error: No se pudo acceder a la hoja para el evento '{selected_event}'. Contacta al administrador."
                           user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Resetear
                       else:
@@ -2875,116 +3034,35 @@ Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744""
 
 
                            else: # Lista Normal parseada correctamente (hay al menos 1 invitado válido)
-                                # --- Añadir invitados normales a la hoja del evento ---
-                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp', "ENVIADO"] # Ajusta tus headers
-
+                                # --- Obtener nombre del PR para invitados normales ---
+                                pr_name = sender_phone_normalized # Fallback
                                 try:
-                                    # Verificar/Crear encabezados (maneja hoja vacía) - Lógica movida a get_sheet_by_event_name
-                                    # Nos aseguramos de tener la hoja y sus encabezados correctos antes de añadir filas
-                                    # Simplemente leer para confirmar headers después de get_sheet...
-                                    # headers_check = event_sheet.row_values(1)
-
-                                    # Obtener nombre del PR (usando mapeo General) para la columna 'Publica' en la hoja de evento
-                                    pr_name = sender_phone_normalized # Fallback
-                                    try:
-                                        phone_to_pr_map = sheet_conn.get_phone_pr_mapping()
-                                        if phone_to_pr_map:
-                                             pr_name_found = phone_to_pr_map.get(sender_phone_normalized)
-                                             if pr_name_found: pr_name = pr_name_found
-                                             else: logger.warning(f"No se encontró PR Name Normal mapeado para {sender_phone_normalized} para columna 'Publica'. Usando número.")
-                                        else:
-                                             logger.warning("Mapeo PR Normal no disponible para columna 'Publica'. Usando número.")
-
-                                    except Exception as e:
-                                        logger.error(f"Error al buscar PR Normal para columna 'Publica': {e}")
-
-                                    # Crear filas para Google Sheets
-                                    rows_to_add = []
-                                    # La validación básica (nombre y email no vacíos, email format) ya se hizo en extract_guests_from_split_format
-                                    valid_guests_count = 0 # Contar cuántos items parseados se intentarán añadir
-                                    for guest in structured_guests:
-                                        # structured_guests ya viene validado por el parser
-                                        # Asumiendo que structured_guests tiene dicts con 'nombre', 'apellido', 'email', 'genero'
-                                        full_name = f"{guest.get('nombre', '')} {guest.get('apellido', '')}".strip()
-                                        rows_to_add.append([
-                                            full_name,
-                                            guest.get("email", ""),
-                                            guest.get("genero", "Otro"), # Default si el parser no lo da (e.g. categoría 'General')
-                                            pr_name,
-                                            selected_event,
-                                            timestamp,
-                                            '' # Columna ENVIADO (vacía inicialmente, checkbox sin marcar)
-                                        ])
-                                        valid_guests_count += 1 # Contar los que realmente vamos a intentar añadir
-
-
-                                    # Añadir a la hoja específica del evento
-                                    if rows_to_add:
-                                         # ---> ¡LOG ANTES DE ENVIAR! <---
-                                         logger.info(f"Intentando añadir {len(rows_to_add)} filas normales a la hoja '{event_sheet.title}'.")
-                                         # ------------------------------------
-                                         try: # Añadido try/except específico para append_rows
-                                             result = event_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
-                                             added_count = result.get('updates', {}).get('updatedRows', 0)
-                                             logger.info(f"Resultado de append_rows para normales: {result}")
-                                             logger.info(f"Agregados {added_count} invitados normales a '{selected_event}'")
-
-                                             # Comparar invitados añadidos con invitados parseados
-                                             if added_count == valid_guests_count and not error_info_parsing: # Si se añadieron todos los parseados y no hubo errores de formato
-                                                 response_text = f"✅ ¡Éxito! Se anotaron *{added_count}* invitado(s) Generales para *{selected_event}*."
-                                             elif added_count > 0: # Si se añadieron algunos, pero no todos los parseados (hubo inválidos filtrados) O hubo error_info_parsing
-                                                  # Combinar el conteo de añadidos con la advertencia de formato si existió
-                                                  base_msg = f"⚠️ Se anotaron *{added_count}* invitado(s) Generales para *{selected_event}*, pero algunos de tu lista tenían datos inválidos y fueron omitidos."
-                                                  if error_info_parsing:
-                                                      base_msg += f" También detecté problemas con algunas entradas: {error_info_parsing.get('message', 'Formato incorrecto.')}"
-                                                  response_text = base_msg
-
-                                             else: # added_count == 0 (Error interno en append o no se añadieron filas)
-                                                  logger.error(f"Error añadiendo filas normales a '{event_sheet.title}', API reportó 0 añadidas.")
-                                                  response_text = f"❌ Hubo un error al guardar los invitados en la hoja '{selected_event}'. Intenta de nuevo."
-
-                                             # Resetear estado SIEMPRE que se haya añadido algo o habido éxito total/parcial
-                                             if added_count > 0:
-                                                  user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
-                                             # Si no se añadió nada (added_count=0) Y hubo errores de parseo, mantenemos el estado para dar feedback.
-                                             # Si added_count=0 y error_info_parsing is None, es un error inesperado, también reseteamos.
-                                             elif error_info_parsing is None:
-                                                  user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
-
-
-                                         except gspread.exceptions.APIError as append_api_err: # Capturar error específico de append_rows
-                                             logger.error(f"Error DIRECTO de API en event_sheet.append_rows: {append_api_err}")
-                                             logger.error(traceback.format_exc())
-                                             # Intenta dar un mensaje más específico si el error lo permite
-                                             error_detail = str(append_api_err)
-                                             if "invalid value" in error_detail.lower() or "bad request" in error_detail.lower():
-                                                  response_text = f"❌ Error de formato o datos inválidos al guardar en la hoja '{selected_event}'. Revisa tu lista cuidadosamente. Detalle técnico: {error_detail[:50]}..."
-                                             elif "permission" in error_detail.lower():
-                                                  response_text = f"❌ Error de permisos al escribir en la hoja '{selected_event}'. Contacta al administrador."
-                                             else:
-                                                  response_text = f"❌ Hubo un error crítico de Google Sheets al intentar guardar en la hoja '{selected_event}'. Contacta al administrador. Detalle técnico: {error_detail[:50]}..."
-                                             # No resetear estado en caso de errores de API para posible diagnóstico
-                                         except Exception as append_err: # Capturar otros errores inesperados en append
-                                             logger.error(f"Error INESPERADO al intentar append_rows a '{event_sheet.title}': {append_err}")
-                                             logger.error(traceback.format_exc())
-                                             response_text = f"❌ Hubo un error interno al intentar guardar en la hoja '{selected_event}'. Intenta de nuevo."
-                                             # No resetear estado necesariamente
+                                    phone_to_pr_map = sheet_conn.get_phone_pr_mapping()
+                                    if phone_to_pr_map:
+                                         pr_name_found = phone_to_pr_map.get(sender_phone_normalized)
+                                         if pr_name_found: pr_name = pr_name_found
+                                         else: logger.warning(f"No se encontró PR Name Normal mapeado para {sender_phone_normalized}. Usando número.")
                                     else:
-                                         # Esto no debería ocurrir si structured_guests no estaba vacío
-                                         logger.error("Error lógico: Había invitados válidos parseados pero no se generaron filas para añadir.")
-                                         response_text = "❌ Hubo un error interno al preparar los datos para guardar. Intenta de nuevo."
-
-                                except gspread.exceptions.APIError as sheet_api_err:
-                                   logger.error(f"Error de API de Google Sheets al operar en '{event_sheet.title}': {sheet_api_err}")
-                                   response_text = f"❌ Hubo un error de comunicación con Google Sheets ({sheet_api_err.response.status_code if sheet_api_err.response else '?'}). Intenta de nuevo más tarde."
-                                   # No resetear estado necesariamente, puede ser temporal
+                                         logger.warning("Mapeo PR Normal no disponible. Usando número.")
                                 except Exception as e:
-                                   logger.error(f"Error inesperado al procesar/añadir invitados normales a '{event_sheet.title}': {e}")
-                                   import traceback
-                                   logger.error(traceback.format_exc())
-                                   response_text = "❌ Hubo un error interno procesando tu lista. Intenta de nuevo."
-                                   # No resetear estado necesariamente
+                                    logger.error(f"Error al buscar PR Normal: {e}")
+
+                                # --- Usar función unificada para guardar invitados Normal ---
+                                added_count = add_guests_to_unified_sheet(unified_event_sheet, structured_guests, pr_name, 'Normal')
+
+                                # --- Procesar resultado ---
+                                if added_count > 0:
+                                    response_text = f"✅ ¡Éxito! Se anotaron *{added_count}* invitado(s) Generales para el evento *{selected_event}*."
+                                    # Resetear estado después de éxito
+                                    user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+                                elif added_count == -1:
+                                    response_text = f"⚠️ Intenté anotar invitados Generales para *{selected_event}*, pero no encontré datos válidos (ej. email o nombre faltante) en tu lista. Revisa el formato y los datos. Intenta de nuevo o escribe 'cancelar'."
+                                    # Mantener estado para reintento
+                                else: # added_count == 0
+                                    response_text = f"❌ Hubo un error al guardar los invitados Generales en la hoja. Por favor, intenta de nuevo más tarde o contacta al administrador."
+                                    # Resetear por seguridad en caso de error de escritura
+                                    user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+
 
 
                   else: # Tipo de invitado desconocido en estado (no debería pasar)
