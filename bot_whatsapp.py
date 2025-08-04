@@ -194,7 +194,7 @@ def get_or_create_unified_event_sheet(sheet_conn, event_name):
             
             # Crear nueva hoja unificada para este evento
             # Incluye columnas para ambos tipos: General (sin Instagram) y VIP (con Instagram)
-            expected_headers = ['Nombre', 'Email', 'Instagram', 'TIPO', 'PR', 'Timestamp']
+            expected_headers = ['Nombre', 'Email', 'Instagram', 'TIPO', 'PR', 'EMAIL PR', 'Timestamp']
             unified_event_sheet = sheet_conn.spreadsheet.add_worksheet(
                 title=unified_sheet_name, 
                 rows=1, 
@@ -256,7 +256,7 @@ def get_or_create_vip_event_sheet(sheet_conn, event_name):
         logger.error(f"Error al obtener/crear hoja VIP para evento '{event_name}': {e}")
         return None
 
-def add_guests_to_unified_sheet(sheet, guests_list, pr_name, guest_type):
+def add_guests_to_unified_sheet(sheet, guests_list, pr_name, guest_type, sheet_conn):
     """
     Agrega invitados (General o VIP) a la hoja unificada del evento.
     
@@ -265,6 +265,7 @@ def add_guests_to_unified_sheet(sheet, guests_list, pr_name, guest_type):
         guests_list (list): Lista de diccionarios con info de invitados.
         pr_name (str): Nombre del PR que los está añadiendo.
         guest_type (str): 'VIP' o 'Normal' para determinar el tipo.
+        sheet_conn: Instancia de SheetsConnection para obtener email del PR.
         
     Returns:
         int: Número de invitados añadidos. 0 si hay error o no se añadió nada.
@@ -285,8 +286,8 @@ def add_guests_to_unified_sheet(sheet, guests_list, pr_name, guest_type):
     try:
         logger.info(f"DEBUG Add Unified: Recibido tipo={type(guests_list)}, contenido={guests_list}, guest_type={guest_type}")
         
-        # --- Verificar/Crear encabezados (Nombre | Email | Instagram | TIPO | PR | Timestamp) ---
-        expected_headers = ['Nombre', 'Email', 'Instagram', 'TIPO', 'PR', 'Timestamp']
+        # --- Verificar/Crear encabezados (Nombre | Email | Instagram | TIPO | PR | EMAIL PR | Timestamp) ---
+        expected_headers = ['Nombre', 'Email', 'Instagram', 'TIPO', 'PR', 'EMAIL PR', 'Timestamp']
         try:
             headers = sheet.row_values(1)
         except gspread.exceptions.APIError as api_err:
@@ -299,6 +300,29 @@ def add_guests_to_unified_sheet(sheet, guests_list, pr_name, guest_type):
         if headers != expected_headers:
             logger.info(f"Actualizando/Creando encabezados en hoja unificada: {expected_headers}")
             sheet.update(f'A1:{gspread.utils.rowcol_to_a1(1, len(expected_headers))}', [expected_headers])
+
+        # --- Obtener email del PR desde la hoja Telefonos ---
+        pr_email = ""  # Fallback vacío
+        try:
+            # Obtener el mapeo de teléfono del PR desde el contexto (necesitamos encontrar el teléfono del PR)
+            # Por ahora, intentamos obtener el email basado en el mapeo reverso
+            pr_email_mapping = sheet_conn.get_phone_pr_email_mapping()
+            
+            # Buscar el email correspondiente al pr_name
+            for phone, email in pr_email_mapping.items():
+                # Obtener el mapeo de teléfono a nombre PR para hacer la correlación
+                pr_name_mapping = sheet_conn.get_phone_pr_mapping()
+                if phone in pr_name_mapping and pr_name_mapping[phone] == pr_name:
+                    pr_email = email
+                    logger.info(f"Email PR encontrado para '{pr_name}': {pr_email}")
+                    break
+            
+            if not pr_email:
+                logger.warning(f"No se encontró email para PR '{pr_name}'. Usando vacío.")
+                
+        except Exception as e:
+            logger.error(f"Error al obtener email del PR '{pr_name}': {e}")
+            pr_email = ""  # Fallback vacío
 
         # --- Crear las filas ---
         for guest_data in guests_list:
@@ -351,8 +375,8 @@ def add_guests_to_unified_sheet(sheet, guests_list, pr_name, guest_type):
                 else:  # VIP
                     tipo_value = f"{gender_for_tipo} VIP"
 
-                # Añadir fila con Nombre, Email, Instagram, TIPO, PR, Timestamp
-                row_data = [name, email, instagram, tipo_value, pr_name, timestamp]
+                # Añadir fila con Nombre, Email, Instagram, TIPO, PR, EMAIL PR, Timestamp
+                row_data = [name, email, instagram, tipo_value, pr_name, pr_email, timestamp]
                 rows_to_add.append(row_data)
                 added_count += 1
             else:
@@ -972,6 +996,55 @@ class SheetsConnection:
         except Exception as e:
             logger.error(f"Error inesperado al obtener mapeo PR: {e}. Usando caché anterior si existe.")
             return self._pr_name_map_cache if self._pr_name_map_cache is not None else {}
+
+    def get_phone_pr_email_mapping(self):
+        """
+        Obtiene un diccionario que mapea números de teléfono normalizados
+        a los emails de PR correspondientes desde la hoja 'Telefonos'.
+        Usa caché para eficiencia.
+        """
+        now = time.time()
+        # Usar el mismo intervalo de caché que otros mapeos
+        if hasattr(self, '_pr_email_map_cache') and self._pr_email_map_cache is not None and hasattr(self, '_pr_email_map_last_refresh') and now - self._pr_email_map_last_refresh < self._phone_cache_interval:
+            return self._pr_email_map_cache
+
+        logger.info("Refrescando caché de mapeo Telefono -> Email PR...")
+        phone_to_pr_email_map = {}
+        try:
+            phone_sheet = self.phone_sheet_obj
+            if phone_sheet:
+                # Leer columnas (A=Telefonos, B=PR, C=Email)
+                # Usamos get_all_values para asegurar que las filas coincidan
+                all_values = phone_sheet.get_all_values()
+                if len(all_values) > 1: # Asegurar que hay datos además del encabezado
+                    # Asumimos encabezados en la fila 1, empezamos desde la fila 2 (índice 1)
+                    for row in all_values[1:]:
+                        if len(row) >= 3: # Asegurar que la fila tiene al menos 3 columnas (Telefono, PR, Email)
+                            raw_phone = row[0] # Columna A (índice 0) - Telefonos
+                            pr_name = row[1]   # Columna B (índice 1) - PR
+                            pr_email = row[2]  # Columna C (índice 2) - Email
+                            if raw_phone and pr_email: # Solo procesar si teléfono y email tienen valor
+                                normalized_phone = re.sub(r'\D', '', str(raw_phone))
+                                if normalized_phone:
+                                    phone_to_pr_email_map[normalized_phone] = pr_email.strip()
+                        else:
+                            logger.warning(f"Fila incompleta en hoja 'Telefonos' (necesita 3 columnas): {row}")
+                logger.info(f"Creado mapeo para {len(phone_to_pr_email_map)} teléfonos a emails PR.")
+            else:
+                logger.error("No se puede refrescar mapeo Email PR porque hoja 'Telefonos' no está disponible.")
+                # Mantenemos el caché vacío o el anterior si hubo error temporal
+                phone_to_pr_email_map = getattr(self, '_pr_email_map_cache', {})
+
+            self._pr_email_map_cache = phone_to_pr_email_map
+            self._pr_email_map_last_refresh = now
+            return self._pr_email_map_cache
+
+        except gspread.exceptions.APIError as e:
+            logger.error(f"Error de API al leer la hoja 'Telefonos' para mapeo Email PR: {e}. Usando caché anterior si existe.")
+            return getattr(self, '_pr_email_map_cache', {})
+        except Exception as e:
+            logger.error(f"Error inesperado al obtener mapeo Email PR: {e}. Usando caché anterior si existe.")
+            return getattr(self, '_pr_email_map_cache', {})
 
 
 # Funciones de análisis de sentimientos
@@ -2968,7 +3041,7 @@ Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744""
                           
                           if unified_event_sheet:
                               # Usar la función unificada para guardar invitados VIP
-                              added_count = add_guests_to_unified_sheet(unified_event_sheet, structured_guests, pr_name, 'VIP')
+                              added_count = add_guests_to_unified_sheet(unified_event_sheet, structured_guests, pr_name, 'VIP', sheet_conn)
                           else:
                               logger.error(f"No se pudo crear/obtener hoja unificada para evento '{selected_event}'")
                               added_count = 0
@@ -3051,7 +3124,7 @@ Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744""
                                     logger.error(f"Error al buscar PR Normal: {e}")
 
                                 # --- Usar función unificada para guardar invitados Normal ---
-                                added_count = add_guests_to_unified_sheet(unified_event_sheet, structured_guests, pr_name, 'Normal')
+                                added_count = add_guests_to_unified_sheet(unified_event_sheet, structured_guests, pr_name, 'Normal', sheet_conn)
 
                                 # --- Procesar resultado ---
                                 if added_count > 0:
