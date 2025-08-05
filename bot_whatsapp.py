@@ -2826,15 +2826,13 @@ Puedo ayudarte con la administración de tu lista de invitados. Aquí tienes lo 
 
 ‼️ *Esta primera vez, necesitamos que nos envies tus invitaciones generales mediante el Agente y tambien al email (anto@svg-ent.com), para poder verificar que funcione correctamente.*                    
 
-Conmigo vas a poder anotar tus Invitaciones *GENERALES* para nuestros eventos con cortesias disponibles ! 🤩
+Conmigo vas a poder anotar tus Invitaciones para nuestros eventos con cortesias disponibles ! 🤩
 
 Eventos disponibles:
 
 {event_list_text}
 
 Responde con el número del evento en el que deseas anotar tus invitaciones.
-
-‼️Recorda que para Invitaciones VIP es necesaria la aprobacion de los perfiles, esas invitaciones las recibimos al email anto@svg-ent.com
 
 Si quieres saber tus invitados ya anotados en la lista escribe:
 "cuántos invitados" o "lista de invitados"
