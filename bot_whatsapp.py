@@ -2286,8 +2286,8 @@ def get_guests_by_pr(sheet_conn, phone_number):
 
                 # Filtrar por nombre del PR o número de teléfono (como fallback)
                 event_guests = [guest for guest in all_guests if 
-                               guest.get('Publica') == pr_name or 
-                               guest.get('Publica') == phone_number]
+                               guest.get('PR') == pr_name or 
+                               guest.get('PR') == phone_number]
                 
                 if event_guests:
                     guests_by_event[event_name] = event_guests
