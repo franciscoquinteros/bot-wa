@@ -2332,19 +2332,15 @@ def generate_per_event_response(guests_by_event, pr_name, phone_number):
         # Calcular conteos por género para ESTE evento
         event_categories = {}
         for guest in event_guest_list:
-            gender_keys = ['Genero', 'genero', 'Género', 'Gender']
-            gender = next((guest[k] for k in gender_keys if k in guest and guest[k]), 'Sin categoría')
-            if not gender: gender = 'Sin categoría'
-            event_categories[gender] = event_categories.get(gender, 0) + 1
+            # Usar directamente el valor de la columna TIPO
+            tipo = guest.get('TIPO', 'Sin categoría')
+            event_categories[tipo] = event_categories.get(tipo, 0) + 1
 
         # Añadir conteos por género para el evento
         has_gender_counts = False
         for category, count in event_categories.items():
              if count > 0:
-                display_category = category
-                if category.lower() == "masculino": display_category = "Hombres"
-                elif category.lower() == "femenino": display_category = "Mujeres"
-                response_parts.append(f"📊 {display_category}: {count}")
+                response_parts.append(f"📊 {category}: {count}")
                 has_gender_counts = True
         if not has_gender_counts:
              response_parts.append("(No se especificó género)")
@@ -2359,18 +2355,14 @@ def generate_per_event_response(guests_by_event, pr_name, phone_number):
         response_parts.append("\n📝 Detalle:")
         guests_by_gender_in_event = {}
         for guest in event_guest_list:
-            gender_keys = ['Genero', 'genero', 'Género', 'Gender']
-            gender = next((guest[k] for k in gender_keys if k in guest and guest[k]), 'Sin categoría')
-            if not gender: gender = 'Sin categoría'
-            if gender not in guests_by_gender_in_event:
-                guests_by_gender_in_event[gender] = []
-            guests_by_gender_in_event[gender].append(guest)
+            # Usar directamente el valor de la columna TIPO
+            tipo = guest.get('TIPO', 'Sin categoría')
+            if tipo not in guests_by_gender_in_event:
+                guests_by_gender_in_event[tipo] = []
+            guests_by_gender_in_event[tipo].append(guest)
 
-        for gender, guests in guests_by_gender_in_event.items():
-            display_gender = gender
-            if gender.lower() == "masculino": display_gender = "Hombres"
-            elif gender.lower() == "femenino": display_gender = "Mujeres"
-            response_parts.append(f"*{display_gender}*:")
+        for tipo, guests in guests_by_gender_in_event.items():
+            response_parts.append(f"*{tipo}*:")
             for guest in guests:
                 name_keys = ['Nombre y Apellido', 'Nombre', 'nombre']
                 email_keys = ['Email', 'email']
@@ -2449,22 +2441,16 @@ def generate_count_response(result, guests_data, phone_number, sentiment, event_
         # Agrupar invitados por género (usando los datos ya filtrados)
         guests_by_gender = {}
         for guest in guests_data:
-            # Intentar obtener el género de forma flexible
-            gender_keys = ['Genero', 'genero', 'Género', 'Gender']
-            gender = next((guest[k] for k in gender_keys if k in guest and guest[k]), 'Sin categoría')
-            if not gender: gender = 'Sin categoría' # Doble chequeo por si era ''
+            # Usar directamente el valor de la columna TIPO
+            tipo = guest.get('TIPO', 'Sin categoría')
 
-            if gender not in guests_by_gender:
-                guests_by_gender[gender] = []
-            guests_by_gender[gender].append(guest)
+            if tipo not in guests_by_gender:
+                guests_by_gender[tipo] = []
+            guests_by_gender[tipo].append(guest)
 
-        # Mostrar invitados por género
-        for gender, guests in guests_by_gender.items():
-            display_gender = gender
-            if gender.lower() == "masculino": display_gender = "Hombres"
-            elif gender.lower() == "femenino": display_gender = "Mujeres"
-
-            base_response += f"\n*{display_gender}*:\n"
+        # Mostrar invitados por tipo
+        for tipo, guests in guests_by_gender.items():
+            base_response += f"\n*{tipo}*:\n"
             for guest in guests:
                 # Intentar obtener nombre/apellido/email de forma flexible
                 name_keys = ['Nombre y Apellido', 'Nombre', 'nombre']
