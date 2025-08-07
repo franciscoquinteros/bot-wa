@@ -3182,9 +3182,22 @@ def broadcast_message():
         "target_group": "all_prs" | "vips",
         "template_variables": { "1": "valor1", ... } // opcional
     }
+    Requiere cabecera Authorization: Bearer <API_TOKEN>
     """
-    # Para simplificar y por seguridad, por ahora no requerimos autenticación,
-    # pero en un futuro se podría añadir un token de API aquí.
+    # Verificar autenticación
+    auth_header = request.headers.get('Authorization')
+    expected_token = os.getenv('BROADCAST_API_TOKEN')
+    
+    if not expected_token:
+        logger.warning("Variable BROADCAST_API_TOKEN no configurada. Endpoint de difusión deshabilitado.")
+        return jsonify({"status": "error", "message": "Servicio no disponible"}), 503
+    
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({"status": "error", "message": "Token de autorización requerido"}), 401
+    
+    token = auth_header.split(' ', 1)[1] if len(auth_header.split(' ')) > 1 else ''
+    if token != expected_token:
+        return jsonify({"status": "error", "message": "Token de autorización inválido"}), 401
 
     if not request.is_json:
         return jsonify({"status": "error", "message": "Request must be JSON"}), 400
@@ -3214,24 +3227,50 @@ def broadcast_message():
             logger.info(f"No se encontraron números de teléfono para el grupo '{target_group}'.")
             return jsonify({"status": "success", "message": f"No se encontraron números para el grupo '{target_group}'."}), 200
 
-        # Enviar mensajes
-        results = {"sent": [], "failed": []}
-        for phone in phone_numbers:
-            # Los números ya vienen normalizados de las funciones get_..._phones()
-            result = send_templated_message(phone, template_sid, template_variables)
-            if result.get("success"):
-                results["sent"].append({"phone": phone, "sid": result.get("sid")})
-            else:
-                results["failed"].append({"phone": phone, "error": result.get("error")})
-
-        total_sent = len(results["sent"])
-        total_failed = len(results["failed"])
-        logger.info(f"Difusión completada. Enviados: {total_sent}, Fallidos: {total_failed}")
-
+        # Respuesta inmediata para evitar timeout
+        total_phones = len(phone_numbers)
+        logger.info(f"Iniciando difusión a {total_phones} números en background...")
+        
+        # Procesar en background con threading
+        import threading
+        
+        def send_broadcast_async():
+            results = {"sent": [], "failed": []}
+            current_phone = 0
+            
+            for phone in phone_numbers:
+                current_phone += 1
+                try:
+                    # Los números ya vienen normalizados de las funciones get_..._phones()
+                    result = send_templated_message(phone, template_sid, template_variables)
+                    if result.get("success"):
+                        results["sent"].append({"phone": phone, "sid": result.get("sid")})
+                        logger.info(f"Mensaje enviado {current_phone}/{total_phones} a {phone}")
+                    else:
+                        results["failed"].append({"phone": phone, "error": result.get("error")})
+                        logger.warning(f"Fallo al enviar {current_phone}/{total_phones} a {phone}: {result.get('error')}")
+                except Exception as e:
+                    results["failed"].append({"phone": phone, "error": str(e)})
+                    logger.error(f"Error crítico al enviar a {phone}: {e}")
+                
+                # Rate limiting: pausa de 1 segundo entre envíos (excepto el último)
+                if current_phone < total_phones:
+                    time.sleep(1)
+            
+            total_sent = len(results["sent"])
+            total_failed = len(results["failed"])
+            logger.info(f"Difusión completada. Enviados: {total_sent}, Fallidos: {total_failed}")
+        
+        # Iniciar proceso en background
+        thread = threading.Thread(target=send_broadcast_async)
+        thread.daemon = True
+        thread.start()
+        
+        # Respuesta inmediata
         return jsonify({
-            "status": "complete",
-            "message": f"Proceso de difusión finalizado. Enviados: {total_sent}, Fallidos: {total_failed}",
-            "results": results
+            "status": "started",
+            "message": f"Difusión iniciada para {total_phones} números. El proceso continuará en background.",
+            "total_recipients": total_phones
         }), 200
 
     except Exception as e:
