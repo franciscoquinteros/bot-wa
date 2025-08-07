@@ -2823,7 +2823,8 @@ Responde con el número del evento en el que deseas anotar tus invitaciones.
 Si quieres saber tus invitados ya anotados en la lista escribe:
 "cuántos invitados" o "lista de invitados"
 
-Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744"""
+Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744
+SVG 😎"""
                     if is_vip:
                         vip_message = "\n\n✨ *Nota: Como PR VIP, tienes acceso especial.*"
                         response_text = base_response_text + vip_message
