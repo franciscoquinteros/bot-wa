@@ -1394,11 +1394,25 @@ def extract_guests_from_split_format(lines):
                 logger.warning(f"Nombre vacío detectado emparejado con email '{email}'. Saltando.")
                 continue
 
+            # Determinar género final
+            final_genero = genero
+            
+            # Si no hay género específico (categoría 'General' o similar) y tenemos nombre, usar IA
+            if genero in ["Otro", None] and nombre:
+                inferred = infer_gender_llm(nombre)
+                if inferred.lower() in ['hombre', 'masculino']:
+                    final_genero = "Masculino"
+                elif inferred.lower() in ['mujer', 'femenino']:
+                    final_genero = "Femenino"
+                else:
+                    final_genero = "Otro"  # Fallback si no se pudo determinar
+                logger.debug(f"Género inferido por IA para '{nombre}': {inferred} -> {final_genero}")
+            
             guest_info = {
                 "nombre": nombre,
                 "apellido": apellido,
                 "email": email,
-                "genero": genero # Usar el género de la categoría
+                "genero": final_genero
             }
             guests.append(guest_info)
             logger.debug(f"Invitado emparejado OK: {full_name} - {email} ({genero})")
@@ -2023,8 +2037,19 @@ def parse_vip_guest_list_with_instagram(message_body):
                 if current_category_key not in data_by_category:
                     data_by_category[current_category_key] = {'names': [], 'emails': [], 'instagrams': []}
             
-            if re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", line):
-                data_by_category[current_category_key]['emails'].append(line)
+            # Buscar múltiples emails en la línea usando regex
+            email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+            found_emails = re.findall(email_pattern, line)
+            
+            if found_emails:
+                # Añadir todos los emails encontrados en orden
+                for email in found_emails:
+                    data_by_category[current_category_key]['emails'].append(email)
+                logger.debug(f"Emails encontrados en línea: {found_emails}")
+            else:
+                # Fallback: usar el método anterior para emails que no pasen el regex más estricto
+                if re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", line):
+                    data_by_category[current_category_key]['emails'].append(line)
             continue
 
         # --- Detectar Instagram Links ---
@@ -2080,12 +2105,26 @@ def parse_vip_guest_list_with_instagram(message_body):
             nombre = name_parts[0] if name_parts else ""
             apellido = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
             
+            # Determinar género
+            genero = category_map.get(category_key, None)
+            
+            # Si no hay categoría específica (Default) o no se pudo mapear, usar IA
+            if genero is None and category_key == "Default" and nombre:
+                inferred = infer_gender_llm(nombre)
+                if inferred.lower() in ['hombre', 'masculino']:
+                    genero = "Masculino"
+                elif inferred.lower() in ['mujer', 'femenino']:
+                    genero = "Femenino"
+                else:
+                    genero = None  # Mantener como None si no se pudo determinar
+                logger.debug(f"Género inferido por IA para '{nombre}': {inferred} -> {genero}")
+            
             guest = {
                 'nombre': nombre,
                 'apellido': apellido,
                 'email': emails[i],
                 'instagram': instagrams[i],
-                'genero': category_map.get(category_key, None)
+                'genero': genero
             }
             guests.append(guest)
     
@@ -2227,10 +2266,25 @@ def parse_vip_guest_list(message_body):
             email_clean = cat_data['emails'][i].strip()
             
             if name_info.get('nombre') and email_clean:
+                # Determinar género final
+                genero = name_info['genero']
+                nombre = name_info['nombre'].strip()
+                
+                # Si no hay género específico y tenemos nombre, usar IA
+                if genero is None and nombre:
+                    inferred = infer_gender_llm(nombre)
+                    if inferred.lower() in ['hombre', 'masculino']:
+                        genero = "Masculino"
+                    elif inferred.lower() in ['mujer', 'femenino']:
+                        genero = "Femenino"
+                    else:
+                        genero = None  # Mantener None si no se pudo determinar
+                    logger.debug(f"Género inferido por IA para '{nombre}': {inferred} -> {genero}")
+                
                 paired_guests.append({
-                    'nombre': name_info['nombre'].strip(),
+                    'nombre': nombre,
                     'email': email_clean,
-                    'genero': name_info['genero']
+                    'genero': genero
                 })
     
     logger.info(f"Total de invitados VIP emparejados: {len(paired_guests)}")
