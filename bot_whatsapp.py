@@ -74,6 +74,51 @@ def send_twilio_message(phone_number, message):
         logger.error(f"Error al enviar mensaje de Twilio a {destination_number}: {e}")
         return False
 
+def clear_background_color_for_new_rows(sheet, num_new_rows):
+    """
+    Elimina solo los colores de fondo de las filas recién agregadas,
+    manteniendo otros formatos como negritas, cursivas, bordes, etc.
+    """
+    try:
+        # Obtener el número total de filas actual
+        all_values = sheet.get_all_values()
+        total_rows = len(all_values)
+        
+        # Calcular el rango de las filas nuevas
+        start_row = total_rows - num_new_rows + 1
+        end_row = total_rows
+        
+        # Crear la solicitud para limpiar solo el color de fondo
+        requests = [{
+            'repeatCell': {
+                'range': {
+                    'sheetId': sheet.id,
+                    'startRowIndex': start_row - 1,  # -1 porque es 0-indexed
+                    'endRowIndex': end_row,
+                    'startColumnIndex': 0,
+                    'endColumnIndex': sheet.col_count
+                },
+                'cell': {
+                    'userEnteredFormat': {
+                        'backgroundColor': {
+                            'red': 1.0,
+                            'green': 1.0, 
+                            'blue': 1.0,
+                            'alpha': 1.0
+                        }
+                    }
+                },
+                'fields': 'userEnteredFormat.backgroundColor'
+            }
+        }]
+        
+        # Ejecutar la solicitud
+        sheet.spreadsheet.batch_update({'requests': requests})
+        logger.info(f"Color de fondo eliminado de {num_new_rows} filas nuevas en hoja {sheet.title}")
+        
+    except Exception as e:
+        logger.error(f"Error al limpiar color de fondo de filas nuevas: {e}")
+
 def send_templated_message(phone_number, content_sid, content_variables=None):
     """ Envía un mensaje de WhatsApp usando una plantilla de Twilio """
     # Asegurarse que el número tenga el prefijo 'whatsapp:+'
@@ -385,6 +430,8 @@ def add_guests_to_unified_sheet(sheet, guests_list, pr_name, guest_type, sheet_c
         # --- Agregar a la hoja ---
         if rows_to_add:
             sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
+            # Limpiar colores de fondo de las filas recién agregadas
+            clear_background_color_for_new_rows(sheet, len(rows_to_add))
             logger.info(f"Agregados {added_count} invitados {guest_type} a hoja unificada por PR '{pr_name}'.")
             return added_count if added_count == original_count else -1
         else:
@@ -479,6 +526,8 @@ def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
         # --- Agregar a la hoja ---
         if rows_to_add:
             sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
+            # Limpiar colores de fondo de las filas recién agregadas
+            clear_background_color_for_new_rows(sheet, len(rows_to_add))
             logger.info(f"Agregados {added_count} invitados VIP (con género) por PR '{pr_name}'.")
             return added_count if added_count == original_count else -1 # Indica si algunos fallaron la validación interna
         else:
@@ -1665,6 +1714,8 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
                 # Añadir a la hoja con manejo de errores más detallado
                 try:
                     result = sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
+                    # Limpiar colores de fondo de las filas recién agregadas
+                    clear_background_color_for_new_rows(sheet, len(rows_to_add))
                     logger.info(f"Resultado de append_rows: {result}")
                     # Verificación adicional después de append
                     try:
@@ -1948,6 +1999,8 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
         if rows_to_add:
             try:
                 sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
+                # Limpiar colores de fondo de las filas recién agregadas
+                clear_background_color_for_new_rows(sheet, len(rows_to_add))
                 logger.info(f"Agregados {len(rows_to_add)} invitados para evento '{event_name}' por {phone_number}")
                 return len(rows_to_add)
             except gspread.exceptions.APIError as e:
@@ -2605,6 +2658,8 @@ def test_sheet_write():
             if guest_sheet:
                 test_row = ["TEST", "test@example.com", "Otro", "Test PR", "Test Event", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
                 result = guest_sheet.append_row(test_row, value_input_option='USER_ENTERED')
+                # Limpiar color de fondo de la fila de test
+                clear_background_color_for_new_rows(guest_sheet, 1)
                 results["main_sheet"] = {"status": "success", "result": str(result)}
             else:
                 results["main_sheet"] = {"status": "error", "message": "No se pudo obtener la hoja principal"}
@@ -2617,6 +2672,8 @@ def test_sheet_write():
             if vip_sheet:
                 test_row = ["TEST VIP", "Test PR"]
                 result = vip_sheet.append_row(test_row, value_input_option='USER_ENTERED')
+                # Limpiar color de fondo de la fila de test
+                clear_background_color_for_new_rows(vip_sheet, 1)
                 results["vip_sheet"] = {"status": "success", "result": str(result)}
             else:
                 results["vip_sheet"] = {"status": "error", "message": "No se pudo obtener la hoja VIP"}
@@ -2631,6 +2688,8 @@ def test_sheet_write():
                 if event_sheet:
                     test_row = ["TEST EVENT", "test@example.com", "Otro", "Test PR", events[0], datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
                     result = event_sheet.append_row(test_row, value_input_option='USER_ENTERED')
+                    # Limpiar color de fondo de la fila de test
+                    clear_background_color_for_new_rows(event_sheet, 1)
                     results["event_sheet"] = {"status": "success", "event": events[0], "result": str(result)}
                 else:
                     results["event_sheet"] = {"status": "error", "message": f"No se pudo obtener la hoja para evento {events[0]}"}
