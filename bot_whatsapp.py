@@ -39,8 +39,49 @@ TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
 TWILIO_WHATSAPP_NUMBER = os.environ.get('TWILIO_WHATSAPP_NUMBER')
 
+def split_long_message(message, max_length=1500):
+    """
+    Divide un mensaje largo en partes más pequeñas respetando el límite de caracteres.
+    """
+    if len(message) <= max_length:
+        return [message]
+    
+    parts = []
+    current_part = ""
+    lines = message.split('\n')
+    
+    for line in lines:
+        # Si una sola línea es muy larga, la dividimos por palabras
+        if len(line) > max_length:
+            words = line.split(' ')
+            current_line = ""
+            for word in words:
+                if len(current_line + word + " ") <= max_length:
+                    current_line += word + " "
+                else:
+                    if current_part + current_line.strip():
+                        parts.append(current_part + current_line.strip())
+                    current_part = ""
+                    current_line = word + " "
+            line = current_line.strip()
+        
+        # Verificar si podemos agregar la línea al parte actual
+        if len(current_part + line + "\n") <= max_length:
+            current_part += line + "\n"
+        else:
+            # Si el parte actual no está vacío, lo agregamos a la lista
+            if current_part.strip():
+                parts.append(current_part.strip())
+            current_part = line + "\n"
+    
+    # Agregar la última parte si no está vacía
+    if current_part.strip():
+        parts.append(current_part.strip())
+    
+    return parts
+
 def send_twilio_message(phone_number, message):
-    """ Envía un mensaje de WhatsApp usando Twilio """
+    """ Envía un mensaje de WhatsApp usando Twilio, dividiendo mensajes largos """
     # Asegurarse que el número tenga el prefijo 'whatsapp:'
     if not phone_number.startswith('whatsapp:'):
         destination_number = f"whatsapp:{phone_number}"
@@ -62,14 +103,29 @@ def send_twilio_message(phone_number, message):
             return False
 
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-
-        twilio_message = client.messages.create(
-            from_=origin_number,
-            body=message,
-            to=destination_number
-        )
-        logger.info(f"Mensaje enviado a {destination_number}: {twilio_message.sid}")
-        return True
+        
+        # Dividir mensaje si es muy largo
+        message_parts = split_long_message(message)
+        
+        success = True
+        for i, part in enumerate(message_parts):
+            # Si hay múltiples partes, agregar numeración
+            if len(message_parts) > 1:
+                part_header = f"({i+1}/{len(message_parts)})\n"
+                part = part_header + part
+            
+            twilio_message = client.messages.create(
+                from_=origin_number,
+                body=part,
+                to=destination_number
+            )
+            logger.info(f"Mensaje parte {i+1}/{len(message_parts)} enviado a {destination_number}: {twilio_message.sid}")
+            
+            # Pequeña pausa entre mensajes para evitar spam
+            if i < len(message_parts) - 1:
+                time.sleep(0.5)
+        
+        return success
     except Exception as e:
         logger.error(f"Error al enviar mensaje de Twilio a {destination_number}: {e}")
         return False
