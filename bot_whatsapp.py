@@ -2923,8 +2923,6 @@ Puedo ayudarte con la administración de tu lista de invitados. Aquí tienes lo 
                     event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
                     base_response_text = f"""¡Hola! 👋 Soy el Agente de Invitaciones de Savage Prod 😎
 
-‼️ *Esta primera vez, necesitamos que nos envies tus invitaciones mediante el Agente y tambien al email (anto@svg-ent.com), para poder verificar que funcione correctamente.*                    
-
 Conmigo vas a poder anotar tus Invitaciones para nuestros eventos con cortesias disponibles ! 🤩
 
 Eventos disponibles:
@@ -2937,6 +2935,7 @@ Si quieres saber tus invitados ya anotados en la lista escribe:
 "cuántos invitados" o "lista de invitados"
 
 Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744
+
 SVG 😎"""
                     if is_vip:
                         vip_message = "\n\n✨ *Nota: Como PR VIP, tienes acceso especial.*"
