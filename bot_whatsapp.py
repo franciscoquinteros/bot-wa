@@ -569,6 +569,7 @@ def analyze_with_rules(text):
             r"(?i)cuántos",
             r"(?i)cantidad",
             r"(?i)lista",
+            r"(?i)lista\s+de\s+invitados",
             r"(?i)invitados\s+tengo",
             r"(?i)ver\s+invitados"
         ],
@@ -1526,11 +1527,11 @@ def parse_message(message):
     
     # Verificar si es una consulta de conteo
     count_patterns = [
-        r'cu[aá]ntos invitados',
-        r'contar invitados',
-        r'total de invitados',
-        r'invitados totales',
-        r'lista de invitados'
+        r'(?i)cu[aá]ntos invitados',
+        r'(?i)contar invitados',
+        r'(?i)total de invitados',
+        r'(?i)invitados totales',
+        r'(?i)lista de invitados'
     ]
     
     for pattern in count_patterns:
@@ -1607,11 +1608,11 @@ def parse_message_enhanced(message):
     
     # Verificar si es una consulta de conteo
     count_patterns = [
-        r'cu[aá]ntos invitados',
-        r'contar invitados',
-        r'total de invitados',
-        r'invitados totales',
-        r'lista de invitados'
+        r'(?i)cu[aá]ntos invitados',
+        r'(?i)contar invitados',
+        r'(?i)total de invitados',
+        r'(?i)invitados totales',
+        r'(?i)lista de invitados'
     ]
     
     for pattern in count_patterns:
