@@ -2978,7 +2978,7 @@ Puedo ayudarte con la administración de tu lista de invitados. Aquí tienes lo 
                     user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'available_events': [], 'guest_type': None}
                 else:
                     event_list_text = "\n".join([f"{i+1}. {name}" for i, name in enumerate(available_events)])
-                    base_response_text = f"""¡Hola! 👋 Soy el Agente de Invitaciones de Savage Prod 😎
+                    base_response_text = f"""¡Hola! 👋 Soy el Agente de Invitaciones de SVG 😎
 
 Conmigo vas a poder anotar tus Invitaciones para nuestros eventos con cortesias disponibles ! 🤩
 
@@ -2992,8 +2992,7 @@ Si quieres saber tus invitados ya anotados en la lista escribe:
 "cuántos invitados" o "lista de invitados"
 
 Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744
-
-SVG 😎"""
+"""
                     if is_vip:
                         vip_message = "\n\n✨ *Nota: Como PR VIP, tienes acceso especial.*"
                         response_text = base_response_text + vip_message
