@@ -515,7 +515,7 @@ def add_guests_to_unified_sheet(sheet, guests_list, pr_name, guest_type, sheet_c
                     tipo_value = f"VIP {gender_for_tipo}"
 
                 # Añadir fila con Nombre, Email, Instagram, TIPO, PR, EMAIL PR, Timestamp, Enviado
-                row_data = [name, email, instagram, tipo_value, pr_name, pr_email, timestamp, 'FALSO']
+                row_data = [name, email, instagram, tipo_value, pr_name, pr_email, timestamp, False]
                 rows_to_add.append(row_data)
                 added_count += 1
             else:
@@ -615,7 +615,7 @@ def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
                          final_gender = "Desconocido" # Asegurar default si el nombre estaba vacío
 
                 # Añadir fila con Nombre, Email, Instagram, Género (Ingreso), PR, Enviado
-                rows_to_add.append([name, email, instagram, final_gender, pr_name, 'FALSO']) # <-- NUEVO FORMATO FILA
+                rows_to_add.append([name, email, instagram, final_gender, pr_name, False]) # <-- NUEVO FORMATO FILA
                 added_count += 1
             else:
                 logger.warning(f"Se omitió invitado VIP (nombre='{name}', email='{email}', instagram='{instagram}') por datos faltantes. PR: {pr_name}.")
@@ -2102,7 +2102,7 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
                 pr_name,                        # Columna D: Publica (Nombre del PR o número fallback) <--- MODIFICADO
                 event_name,                     # Columna E: Evento
                 timestamp,                      # Columna F: Timestamp
-                'FALSO'                         # Columna G: ENVIADO
+                False                           # Columna G: ENVIADO (casilla de verificación)
             ])
 
         # --- Agregar a la hoja ---
@@ -2681,13 +2681,15 @@ def generate_count_response(result, guests_data, phone_number, sentiment, event_
 
                 email = next((guest[k] for k in email_keys if k in guest and guest[k]), '?(sin email)')
                 
-                # Obtener el estado de 'Enviado'
-                enviado_keys = ['Enviado', 'enviado']
-                enviado = next((guest[k] for k in enviado_keys if k in guest and guest[k]), 'N/A')
-                if enviado == 'VERDADERO':
+                # Obtener el estado de 'Enviado' (casilla de verificación)
+                enviado = guest.get('Enviado', '') or guest.get('enviado', '')
+                
+                if enviado is True or str(enviado).upper() == 'TRUE':
                     enviado_status = '✅ Enviado'
-                elif enviado == 'FALSO':
+                elif enviado is False or str(enviado).upper() == 'FALSE':
                     enviado_status = '❌ No enviado'
+                elif enviado == '' or enviado is None:
+                    enviado_status = '⚪ Sin verificar'
                 else:
                     enviado_status = f'❓ {enviado}'
 
@@ -2776,7 +2778,7 @@ def test_sheet_write():
         try:
             guest_sheet = sheet_conn.get_guest_sheet()
             if guest_sheet:
-                test_row = ["TEST", "test@example.com", "Otro", "Test PR", "Test Event", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "FALSO"]
+                test_row = ["TEST", "test@example.com", "Otro", "Test PR", "Test Event", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), False]
                 result = guest_sheet.append_row(test_row, value_input_option='USER_ENTERED')
                 # Limpiar color de fondo de la fila de test
                 clear_background_color_for_new_rows(guest_sheet, 1)
@@ -2806,7 +2808,7 @@ def test_sheet_write():
             if events:
                 event_sheet = sheet_conn.get_sheet_by_event_name(events[0])
                 if event_sheet:
-                    test_row = ["TEST EVENT", "test@example.com", "Otro", "Test PR", events[0], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "FALSO"]
+                    test_row = ["TEST EVENT", "test@example.com", "Otro", "Test PR", events[0], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), False]
                     result = event_sheet.append_row(test_row, value_input_option='USER_ENTERED')
                     # Limpiar color de fondo de la fila de test
                     clear_background_color_for_new_rows(event_sheet, 1)
