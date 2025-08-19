@@ -876,13 +876,16 @@ class SheetsConnection:
                     current_cols = event_sheet.col_count
                     if current_cols < 8:
                         event_sheet.add_cols(8 - current_cols)
-                    headers.append('ENVIADO') if 'ENVIADO' not in headers else None
+                    if 'ENVIADO' not in headers:
+                        headers.append('ENVIADO')
+                    # Asegurar que solo tenemos exactamente 8 columnas
+                    headers = headers[:8]  # Truncar a máximo 8 elementos
                     event_sheet.update('A1:H1', [headers])
                     logger.info(f"Encabezados actualizados en hoja existente '{event_name}'")
                     
                     # Aplicar casillas de verificación a la columna ENVIADO
                     try:
-                        add_checkboxes_to_column(event_sheet, 7)  # 7 para columna G (ENVIADO)
+                        add_checkboxes_to_column(event_sheet, 8)  # 8 para columna H (ENVIADO)
                     except Exception as checkbox_err:
                         logger.error(f"Error al aplicar casillas de verificación: {checkbox_err}")
             except Exception as read_err:
@@ -904,7 +907,7 @@ class SheetsConnection:
                 
                 # Aplicar casillas de verificación a la columna ENVIADO
                 try:
-                    add_checkboxes_to_column(new_sheet, 7)
+                    add_checkboxes_to_column(new_sheet, 8)
                 except Exception as checkbox_err:
                     logger.error(f"Error al aplicar casillas de verificación: {checkbox_err}")
                 
@@ -2849,7 +2852,11 @@ def setup_all_checkboxes():
                     headers.append('ENVIADO')
                     # Expandir la hoja para tener suficientes columnas si es necesario
                     worksheet.add_cols(1)
-                    worksheet.update('A1:H1', [headers])
+                # Asegurar que solo tenemos exactamente los elementos necesarios
+                headers = headers[:len(headers)]  # Mantener todos los headers válidos
+                max_cols = worksheet.col_count
+                range_end = gspread.utils.rowcol_to_a1(1, min(len(headers), max_cols))
+                worksheet.update(f'A1:{range_end}', [headers])
                 
                 # Aplicar casillas de verificación
                 column_index = headers.index('ENVIADO') + 1  # Convertir índice 0-based a 1-based
