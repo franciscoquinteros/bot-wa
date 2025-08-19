@@ -289,6 +289,23 @@ def get_or_create_unified_event_sheet(sheet_conn, event_name):
         try:
             unified_event_sheet = sheet_conn.spreadsheet.worksheet(unified_sheet_name)
             logger.info(f"Hoja unificada '{unified_sheet_name}' ya existe.")
+            
+            # Verificar si la hoja existente tiene las columnas correctas
+            expected_headers = ['Nombre', 'Email', 'Instagram', 'TIPO', 'PR', 'EMAIL PR', 'Timestamp', 'Enviado']
+            try:
+                headers = unified_event_sheet.row_values(1)
+                if len(headers) < len(expected_headers) or headers[:len(expected_headers)] != expected_headers:
+                    logger.info(f"Actualizando hoja existente '{unified_sheet_name}' para incluir columna Enviado...")
+                    # Expandir la hoja si es necesario
+                    current_cols = unified_event_sheet.col_count
+                    if current_cols < len(expected_headers):
+                        unified_event_sheet.add_cols(len(expected_headers) - current_cols)
+                    # Actualizar encabezados
+                    unified_event_sheet.update(f'A1:{gspread.utils.rowcol_to_a1(1, len(expected_headers))}', [expected_headers])
+                    logger.info(f"Hoja '{unified_sheet_name}' actualizada con nuevos encabezados.")
+            except Exception as header_err:
+                logger.warning(f"Error al verificar/actualizar encabezados en hoja existente: {header_err}")
+            
             return unified_event_sheet
         except gspread.exceptions.WorksheetNotFound:
             logger.info(f"Hoja unificada '{unified_sheet_name}' no existe, creándola...")
@@ -333,6 +350,23 @@ def get_or_create_vip_event_sheet(sheet_conn, event_name):
         try:
             vip_event_sheet = sheet_conn.spreadsheet.worksheet(vip_sheet_name)
             logger.info(f"Hoja VIP '{vip_sheet_name}' ya existe.")
+            
+            # Verificar si la hoja existente tiene las columnas correctas
+            expected_headers = ['Nombre', 'Email', 'Instagram', 'Ingreso', 'PR', 'Enviado']
+            try:
+                headers = vip_event_sheet.row_values(1)
+                if len(headers) < len(expected_headers) or headers[:len(expected_headers)] != expected_headers:
+                    logger.info(f"Actualizando hoja VIP existente '{vip_sheet_name}' para incluir columna Enviado...")
+                    # Expandir la hoja si es necesario
+                    current_cols = vip_event_sheet.col_count
+                    if current_cols < len(expected_headers):
+                        vip_event_sheet.add_cols(len(expected_headers) - current_cols)
+                    # Actualizar encabezados
+                    vip_event_sheet.update(f'A1:{gspread.utils.rowcol_to_a1(1, len(expected_headers))}', [expected_headers])
+                    logger.info(f"Hoja VIP '{vip_sheet_name}' actualizada con nuevos encabezados.")
+            except Exception as header_err:
+                logger.warning(f"Error al verificar/actualizar encabezados en hoja VIP existente: {header_err}")
+            
             return vip_event_sheet
         except gspread.exceptions.WorksheetNotFound:
             logger.info(f"Hoja VIP '{vip_sheet_name}' no existe, creándola...")
@@ -2742,7 +2776,7 @@ def test_sheet_write():
         try:
             guest_sheet = sheet_conn.get_guest_sheet()
             if guest_sheet:
-                test_row = ["TEST", "test@example.com", "Otro", "Test PR", "Test Event", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+                test_row = ["TEST", "test@example.com", "Otro", "Test PR", "Test Event", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "FALSO"]
                 result = guest_sheet.append_row(test_row, value_input_option='USER_ENTERED')
                 # Limpiar color de fondo de la fila de test
                 clear_background_color_for_new_rows(guest_sheet, 1)
@@ -2772,7 +2806,7 @@ def test_sheet_write():
             if events:
                 event_sheet = sheet_conn.get_sheet_by_event_name(events[0])
                 if event_sheet:
-                    test_row = ["TEST EVENT", "test@example.com", "Otro", "Test PR", events[0], datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+                    test_row = ["TEST EVENT", "test@example.com", "Otro", "Test PR", events[0], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "FALSO"]
                     result = event_sheet.append_row(test_row, value_input_option='USER_ENTERED')
                     # Limpiar color de fondo de la fila de test
                     clear_background_color_for_new_rows(event_sheet, 1)
