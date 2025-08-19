@@ -2592,7 +2592,23 @@ def generate_per_event_response(guests_by_event, pr_name, phone_number):
                      apellido = guest.get('apellido', '')
                      full_name = f"{nombre} {apellido}".strip() or "?(sin nombre)"
                 email = next((guest[k] for k in email_keys if k in guest and guest[k]), '?(sin email)')
-                response_parts.append(f"  • {full_name} - {email}")
+                
+                # Obtener el estado de 'Enviado' (casilla de verificación)
+                logger.info(f"DEBUG SUMMARY: Claves disponibles en guest: {list(guest.keys())}")
+                enviado = guest.get('Enviado', '') or guest.get('enviado', '')
+                logger.info(f"DEBUG SUMMARY: Valor de enviado para {full_name}: '{enviado}' (tipo: {type(enviado)})")
+                
+                if enviado is True or str(enviado).upper() == 'TRUE':
+                    enviado_status = '✅ Enviado'
+                elif enviado is False or str(enviado).upper() == 'FALSE':
+                    enviado_status = '❌ No enviado'
+                elif enviado == '' or enviado is None:
+                    enviado_status = '⚪ Sin verificar'
+                else:
+                    enviado_status = f'❓ {enviado}'
+
+                logger.info(f"DEBUG SUMMARY: Estado final para {full_name}: {enviado_status}")
+                response_parts.append(f"  • {full_name} - {email} ({enviado_status})")
 
     # Añadir un total general al final (opcional pero útil)
     response_parts.append(f"\n\n---\nTotal General: {grand_total} invitado{'s' if grand_total != 1 else ''} en {len(guests_by_event)} evento{'s' if len(guests_by_event) != 1 else ''}.")
@@ -2685,7 +2701,9 @@ def generate_count_response(result, guests_data, phone_number, sentiment, event_
                 email = next((guest[k] for k in email_keys if k in guest and guest[k]), '?(sin email)')
                 
                 # Obtener el estado de 'Enviado' (casilla de verificación)
+                logger.info(f"DEBUG: Claves disponibles en guest: {list(guest.keys())}")
                 enviado = guest.get('Enviado', '') or guest.get('enviado', '')
+                logger.info(f"DEBUG: Valor de enviado para {full_name}: '{enviado}' (tipo: {type(enviado)})")
                 
                 if enviado is True or str(enviado).upper() == 'TRUE':
                     enviado_status = '✅ Enviado'
@@ -2696,6 +2714,7 @@ def generate_count_response(result, guests_data, phone_number, sentiment, event_
                 else:
                     enviado_status = f'❓ {enviado}'
 
+                logger.info(f"DEBUG: Estado final para {full_name}: {enviado_status}")
                 base_response += f"  • {full_name} - {email} ({enviado_status})\n"
 
     # Personalizar según sentimiento (opcional, se puede quitar si no es necesario)
