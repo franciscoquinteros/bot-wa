@@ -476,8 +476,8 @@ def add_guests_to_unified_sheet(sheet, guests_list, pr_name, guest_type, sheet_c
                 else:  # VIP
                     tipo_value = f"VIP {gender_for_tipo}"
 
-                # Añadir fila con Nombre, Email, Instagram, TIPO, PR, EMAIL PR, Timestamp
-                row_data = [name, email, instagram, tipo_value, pr_name, pr_email, timestamp]
+                # Añadir fila con Nombre, Email, Instagram, TIPO, PR, EMAIL PR, Timestamp, Enviado
+                row_data = [name, email, instagram, tipo_value, pr_name, pr_email, timestamp, 'FALSO']
                 rows_to_add.append(row_data)
                 added_count += 1
             else:
@@ -573,8 +573,8 @@ def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
                          logger.warning(f"No se pudo inferir género para nombre vacío.")
                          final_gender = "Desconocido" # Asegurar default si el nombre estaba vacío
 
-                # Añadir fila con Nombre, Email, Instagram, Género (Ingreso), PR
-                rows_to_add.append([name, email, instagram, final_gender, pr_name]) # <-- NUEVO FORMATO FILA
+                # Añadir fila con Nombre, Email, Instagram, Género (Ingreso), PR, Enviado
+                rows_to_add.append([name, email, instagram, final_gender, pr_name, 'FALSO']) # <-- NUEVO FORMATO FILA
                 added_count += 1
             else:
                 logger.warning(f"Se omitió invitado VIP (nombre='{name}', email='{email}', instagram='{instagram}') por datos faltantes. PR: {pr_name}.")
@@ -735,8 +735,8 @@ class SheetsConnection:
                  logger.error("Hoja 'Invitados' no encontrada. Intentando crearla.")
                  # Ajusta las columnas/headers según necesites
                  try:
-                    self.guest_sheet = self.spreadsheet.add_worksheet(title="Invitados", rows="1", cols="7")
-                    self.guest_sheet.update('A1:G1', [['Nombre', 'Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp']])
+                    self.guest_sheet = self.spreadsheet.add_worksheet(title="Invitados", rows="1", cols="8")
+                    self.guest_sheet.update('A1:H1', [['Nombre', 'Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp', 'Enviado']])
                  except Exception as create_err:
                     logger.error(f"No se pudo crear la hoja 'Invitados': {create_err}")
                     self.guest_sheet = None # Marcar como no disponible
@@ -849,12 +849,12 @@ class SheetsConnection:
             logger.info(f"Hoja para evento '{event_name}' no encontrada. Intentando crearla...")
             try:
                 # Crear hoja con las columnas necesarias (ahora 7 en lugar de 6)
-                new_sheet = self.spreadsheet.add_worksheet(title=event_name, rows="1", cols="7")
+                new_sheet = self.spreadsheet.add_worksheet(title=event_name, rows="1", cols="8")
                 logger.info(f"Hoja creada con ID: {new_sheet.id}")
                 
                 # Definir encabezados incluyendo la columna ENVIADO
                 expected_headers = ['Nombre y Apellido', 'Email', 'Genero', 'Publica', 'Evento', 'Timestamp', "ENVIADO"]
-                update_result = new_sheet.update('A1:G1', [expected_headers])  # Cambiado a G1 para incluir 7 columnas
+                update_result = new_sheet.update('A1:H1', [expected_headers])  # Cambiado a H1 para incluir 8 columnas
                 logger.info(f"Encabezados añadidos: {update_result}")
                 
                 # Aplicar casillas de verificación a la columna ENVIADO
@@ -2049,7 +2049,7 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
                 pr_name,                        # Columna D: Publica (Nombre del PR o número fallback) <--- MODIFICADO
                 event_name,                     # Columna E: Evento
                 timestamp,                      # Columna F: Timestamp
-                False                           # Columna G: ENVIADO (checkbox desmarcado)
+                'FALSO'                         # Columna G: ENVIADO
             ])
 
         # --- Agregar a la hoja ---
