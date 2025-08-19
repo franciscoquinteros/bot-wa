@@ -534,8 +534,8 @@ def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
 
     try:
         logger.info(f"DEBUG Add VIP: Recibido tipo={type(vip_guests_list)}, contenido={vip_guests_list}") # DEBUG
-        # --- Verificar/Crear encabezados (Nombre | Email | Instagram | Ingreso | PR) ---
-        expected_headers = ['Nombre', 'Email', 'Instagram', 'Ingreso', 'PR'] # <-- NUEVOS HEADERS
+        # --- Verificar/Crear encabezados (Nombre | Email | Instagram | Ingreso | PR | Enviado) ---
+        expected_headers = ['Nombre', 'Email', 'Instagram', 'Ingreso', 'PR', 'Enviado'] # <-- NUEVOS HEADERS
         try:
             headers = sheet.row_values(1)
         except gspread.exceptions.APIError as api_err:
@@ -543,7 +543,10 @@ def add_vip_guests_to_sheet(sheet, vip_guests_list, pr_name):
              else: raise api_err
         if not headers or headers[:len(expected_headers)] != expected_headers:
              logger.info(f"Actualizando/Creando encabezados en 'Invitados VIP': {expected_headers}")
-             # Actualizar rango A1:D1 para 4 columnas
+             # Expandir la hoja para tener suficientes columnas si es necesario
+             current_cols = sheet.col_count
+             if current_cols < len(expected_headers):
+                 sheet.add_cols(len(expected_headers) - current_cols)
              sheet.update(f'A1:{gspread.utils.rowcol_to_a1(1, len(expected_headers))}', [expected_headers])
 
         # --- Crear las filas ---
@@ -1763,7 +1766,11 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
         if not headers or len(headers) < len(expected_headers) or headers[:len(expected_headers)] != expected_headers:
             logger.info(f"Actualizando/Creando encabezados en la hoja '{sheet.title}': {expected_headers}")
             try:
-                sheet.update('A1:F1', [expected_headers])
+                # Expandir la hoja para tener suficientes columnas si es necesario
+                current_cols = sheet.col_count
+                if current_cols < len(expected_headers):
+                    sheet.add_cols(len(expected_headers) - current_cols)
+                sheet.update('A1:G1', [expected_headers])
                 logger.info("Encabezados actualizados correctamente")
             except Exception as header_err:
                 logger.error(f"ERROR al actualizar encabezados: {header_err}")
@@ -1979,8 +1986,12 @@ def add_guests_to_sheet(sheet, guests_data, phone_number, event_name, sheet_conn
             logger.info(f"Actualizando/Creando encabezados en la hoja '{sheet.title}': {expected_headers}")
             # Limpiar solo si es estrictamente necesario y estás seguro.
             # sheet.clear()
-            # Actualizar el rango correcto A1:F1 para 6 columnas
-            sheet.update('A1:F1', [expected_headers])
+            # Expandir la hoja para tener suficientes columnas si es necesario
+            current_cols = sheet.col_count
+            if current_cols < len(expected_headers):
+                sheet.add_cols(len(expected_headers) - current_cols)
+            # Actualizar el rango correcto A1:G1 para 7 columnas
+            sheet.update('A1:G1', [expected_headers])
 
 
         # --- Procesar datos de invitados ---
