@@ -295,7 +295,7 @@ def get_or_create_unified_event_sheet(sheet_conn, event_name):
             
             # Crear nueva hoja unificada para este evento
             # Incluye columnas para ambos tipos: General (sin Instagram) y VIP (con Instagram)
-            expected_headers = ['Nombre', 'Email', 'Instagram', 'TIPO', 'PR', 'EMAIL PR', 'Timestamp']
+            expected_headers = ['Nombre', 'Email', 'Instagram', 'TIPO', 'PR', 'EMAIL PR', 'Timestamp', 'Enviado']
             unified_event_sheet = sheet_conn.spreadsheet.add_worksheet(
                 title=unified_sheet_name, 
                 rows=1, 
@@ -338,7 +338,7 @@ def get_or_create_vip_event_sheet(sheet_conn, event_name):
             logger.info(f"Hoja VIP '{vip_sheet_name}' no existe, creándola...")
             
             # Crear nueva hoja VIP para este evento
-            expected_headers = ['Nombre', 'Email', 'Instagram', 'Ingreso', 'PR']
+            expected_headers = ['Nombre', 'Email', 'Instagram', 'Ingreso', 'PR', 'Enviado']
             vip_event_sheet = sheet_conn.spreadsheet.add_worksheet(
                 title=vip_sheet_name, 
                 rows=1, 
@@ -2627,8 +2627,18 @@ def generate_count_response(result, guests_data, phone_number, sentiment, event_
                      full_name = f"{nombre} {apellido}".strip()
 
                 email = next((guest[k] for k in email_keys if k in guest and guest[k]), '?(sin email)')
+                
+                # Obtener el estado de 'Enviado'
+                enviado_keys = ['Enviado', 'enviado']
+                enviado = next((guest[k] for k in enviado_keys if k in guest and guest[k]), 'N/A')
+                if enviado == 'VERDADERO':
+                    enviado_status = '✅ Enviado'
+                elif enviado == 'FALSO':
+                    enviado_status = '❌ No enviado'
+                else:
+                    enviado_status = f'❓ {enviado}'
 
-                base_response += f"  • {full_name} - {email}\n"
+                base_response += f"  • {full_name} - {email} ({enviado_status})\n"
 
     # Personalizar según sentimiento (opcional, se puede quitar si no es necesario)
     if sentiment == "positivo":
