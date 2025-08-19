@@ -387,8 +387,8 @@ def add_guests_to_unified_sheet(sheet, guests_list, pr_name, guest_type, sheet_c
     try:
         logger.info(f"DEBUG Add Unified: Recibido tipo={type(guests_list)}, contenido={guests_list}, guest_type={guest_type}")
         
-        # --- Verificar/Crear encabezados (Nombre | Email | Instagram | TIPO | PR | EMAIL PR | Timestamp) ---
-        expected_headers = ['Nombre', 'Email', 'Instagram', 'TIPO', 'PR', 'EMAIL PR', 'Timestamp']
+        # --- Verificar/Crear encabezados (Nombre | Email | Instagram | TIPO | PR | EMAIL PR | Timestamp | Enviado) ---
+        expected_headers = ['Nombre', 'Email', 'Instagram', 'TIPO', 'PR', 'EMAIL PR', 'Timestamp', 'Enviado']
         try:
             headers = sheet.row_values(1)
         except gspread.exceptions.APIError as api_err:
@@ -400,6 +400,10 @@ def add_guests_to_unified_sheet(sheet, guests_list, pr_name, guest_type, sheet_c
         # Actualizar encabezados si es necesario
         if headers != expected_headers:
             logger.info(f"Actualizando/Creando encabezados en hoja unificada: {expected_headers}")
+            # Expandir la hoja para tener suficientes columnas si es necesario
+            current_cols = sheet.col_count
+            if current_cols < len(expected_headers):
+                sheet.add_cols(len(expected_headers) - current_cols)
             sheet.update(f'A1:{gspread.utils.rowcol_to_a1(1, len(expected_headers))}', [expected_headers])
 
         # --- Obtener email del PR desde la hoja Telefonos ---
@@ -829,10 +833,14 @@ class SheetsConnection:
                 
                 # Verificar si la hoja tiene la columna ENVIADO, y si no, agregarla
                 headers = event_sheet.row_values(1)
-                if len(headers) < 7 or 'ENVIADO' not in headers:
+                if len(headers) < 8 or 'ENVIADO' not in headers:
                     logger.info(f"Actualizando encabezados para incluir columna ENVIADO en '{event_name}'...")
+                    # Expandir la hoja para tener suficientes columnas si es necesario
+                    current_cols = event_sheet.col_count
+                    if current_cols < 8:
+                        event_sheet.add_cols(8 - current_cols)
                     headers.append('ENVIADO') if 'ENVIADO' not in headers else None
-                    event_sheet.update('A1:G1', [headers])
+                    event_sheet.update('A1:H1', [headers])
                     logger.info(f"Encabezados actualizados en hoja existente '{event_name}'")
                     
                     # Aplicar casillas de verificación a la columna ENVIADO
@@ -2792,7 +2800,9 @@ def setup_all_checkboxes():
                 headers = worksheet.row_values(1)
                 if 'ENVIADO' not in headers:
                     headers.append('ENVIADO')
-                    worksheet.update('A1:G1', [headers])
+                    # Expandir la hoja para tener suficientes columnas si es necesario
+                    worksheet.add_cols(1)
+                    worksheet.update('A1:H1', [headers])
                 
                 # Aplicar casillas de verificación
                 column_index = headers.index('ENVIADO') + 1  # Convertir índice 0-based a 1-based
