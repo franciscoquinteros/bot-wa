@@ -2618,7 +2618,7 @@ def generate_count_response(result, guests_data, phone_number, sentiment, event_
         header_intro = f"Para el evento *{event_name}*, tus invitados registrados"
     else:
         header_intro = "Tus invitados registrados TOTALES"
-
+ 
     # Mensaje si no hay invitados
     if not result or result.get('Total', 0) == 0:
         if event_name:
