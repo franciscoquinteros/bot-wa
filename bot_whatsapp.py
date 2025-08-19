@@ -3081,7 +3081,7 @@ Eventos disponibles:
 
 Responde con el número del evento en el que deseas anotar tus invitaciones.
 
-Si quieres saber tus invitados ya anotados en la lista escribe:
+Si quieres saber tus invitados ya anotados en la lista, y ademas cuales de esos QR ya fueron enviados, escribe:
 "cuántos invitados" o "lista de invitados"
 
 Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744
