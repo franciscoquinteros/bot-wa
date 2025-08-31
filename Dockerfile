@@ -34,10 +34,11 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY requirements.txt .
+RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Instalar browsers de Playwright con verificación
-RUN playwright install --with-deps chromium
+RUN playwright install chromium
 RUN ls -la /root/.cache/ms-playwright/
 RUN find /root/.cache/ms-playwright/ -name "chrome*" -type f
 
