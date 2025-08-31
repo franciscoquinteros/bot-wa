@@ -43,11 +43,39 @@ class PlanOutAutomation:
     def start_browser(self):
         """Initialize and start Playwright browser"""
         try:
+            logger.info("🌐 Iniciando Playwright...")
             self.playwright = sync_playwright().start()
-            self.browser = self.playwright.chromium.launch(
-                headless=self.headless,
-                args=['--no-sandbox', '--disable-dev-shm-usage']
-            )
+            
+            logger.info("🚀 Lanzando browser Chromium...")
+            logger.info(f"🔧 Modo headless: {self.headless}")
+            
+            # Verificar si Chromium está disponible
+            try:
+                self.browser = self.playwright.chromium.launch(
+                    headless=self.headless,
+                    args=[
+                        '--no-sandbox', 
+                        '--disable-dev-shm-usage',
+                        '--disable-web-security',
+                        '--disable-features=VizDisplayCompositor'
+                    ]
+                )
+                logger.info("✅ Browser Chromium lanzado exitosamente")
+            except Exception as browser_error:
+                logger.error(f"❌ Error lanzando Chromium: {browser_error}")
+                # Intentar instalar browsers si faltan
+                logger.info("🔄 Intentando instalar browsers de Playwright...")
+                import subprocess
+                try:
+                    subprocess.run(['playwright', 'install', 'chromium'], check=True, capture_output=True)
+                    logger.info("✅ Browsers instalados, reintentando...")
+                    self.browser = self.playwright.chromium.launch(
+                        headless=self.headless,
+                        args=['--no-sandbox', '--disable-dev-shm-usage']
+                    )
+                except Exception as install_error:
+                    logger.error(f"❌ Error instalando browsers: {install_error}")
+                    raise browser_error
             
             # Create browser context with clean cache
             self.context = self.browser.new_context(
@@ -1413,57 +1441,79 @@ class PlanOutAutomation:
             Dictionary with complete results
         """
         try:
-            logger.info(f"Starting full PlanOut automation workflow for {len(guests_data)} guests")
+            logger.info(f"🎯 PLANOUT WORKFLOW INICIADO - {len(guests_data)} invitados")
+            logger.info(f"🌍 URL base: {self.base_url}")
+            logger.info(f"👤 Usuario: {self.username}")
+            logger.info(f"🖥️ Modo headless: {self.headless}")
             
             # Step 1: Login to PlanOut
-            logger.info("Step 1: Logging into PlanOut...")
+            logger.info("🔐 PASO 1: Iniciando login a PlanOut...")
             if not self.login_planout():
+                logger.error("❌ PASO 1 FALLÓ: Login failed")
                 return {"success": False, "error": "Login failed"}
+            logger.info("✅ PASO 1 COMPLETADO: Login exitoso")
             
             # Step 1.5: Configure Box Office settings
-            logger.info("Step 1.5: Configuring Box Office settings...")
+            logger.info("⚙️ PASO 1.5: Configurando Box Office...")
             if not self.configure_boxoffice_settings():
+                logger.error("❌ PASO 1.5 FALLÓ: Box Office configuration failed")
                 return {"success": False, "error": "Box Office configuration failed"}
+            logger.info("✅ PASO 1.5 COMPLETADO: Box Office configurado")
             
             # Step 2: Navigate to Box Office section
-            logger.info("Step 2: Navigating to Box Office...")
+            logger.info("🧭 PASO 2: Navegando a Box Office...")
             if not self.navigate_to_boxoffice():
+                logger.error("❌ PASO 2 FALLÓ: Navigation to Box Office failed")
                 return {"success": False, "error": "Navigation to Box Office failed"}
+            logger.info("✅ PASO 2 COMPLETADO: En Box Office")
             
             # Step 3: Click CSV upload button
-            logger.info("Step 3: Opening CSV upload modal...")
+            logger.info("📤 PASO 3: Abriendo modal de CSV...")
             if not self.click_csv_upload_button():
+                logger.error("❌ PASO 3 FALLÓ: Failed to open CSV upload modal")
                 return {"success": False, "error": "Failed to open CSV upload modal"}
+            logger.info("✅ PASO 3 COMPLETADO: Modal CSV abierto")
             
             # Step 4: Select "Aforo Total" zone
-            logger.info("Step 4: Selecting Aforo Total zone...")
+            logger.info("🎫 PASO 4: Seleccionando zona Aforo Total...")
             if not self.select_aforo_total_zone():
+                logger.error("❌ PASO 4 FALLÓ: Failed to select Aforo Total zone")
                 return {"success": False, "error": "Failed to select Aforo Total zone"}
+            logger.info("✅ PASO 4 COMPLETADO: Zona seleccionada")
             
             # Step 5: Select test ticket price
-            logger.info("Step 5: Selecting test ticket price...")
+            logger.info("💰 PASO 5: Seleccionando precio de ticket...")
             if not self.select_test_ticket_price():
+                logger.error("❌ PASO 5 FALLÓ: Failed to select test ticket price")
                 return {"success": False, "error": "Failed to select test ticket price"}
+            logger.info("✅ PASO 5 COMPLETADO: Precio seleccionado")
             
             # Step 6: Prepare CSV file
-            logger.info("Step 6: Preparing CSV file from guest data...")
+            logger.info("📋 PASO 6: Preparando archivo CSV...")
             csv_file = self.prepare_guest_sheet(guests_data)
+            logger.info(f"✅ PASO 6 COMPLETADO: CSV creado en {csv_file}")
             
             try:
                 # Step 7: Upload CSV file
-                logger.info("Step 7: Uploading CSV file...")
+                logger.info("⬆️ PASO 7: Subiendo archivo CSV...")
                 if not self.upload_csv_file(csv_file):
+                    logger.error("❌ PASO 7 FALLÓ: CSV file upload failed")
                     return {"success": False, "error": "CSV file upload failed"}
+                logger.info("✅ PASO 7 COMPLETADO: CSV subido exitosamente")
                 
                 # Step 8: Check send confirmation email checkbox
-                logger.info("Step 8: Checking send confirmation email option...")
+                logger.info("📧 PASO 8: Marcando opción de email de confirmación...")
                 if not self.check_send_confirmation_email():
+                    logger.error("❌ PASO 8 FALLÓ: Failed to check send confirmation email")
                     return {"success": False, "error": "Failed to check send confirmation email"}
+                logger.info("✅ PASO 8 COMPLETADO: Email de confirmación activado")
                 
                 # Step 9: Click Select button to process and send QRs
-                logger.info("Step 9: Processing CSV and sending QR codes...")
+                logger.info("🚀 PASO 9: Procesando CSV y enviando códigos QR...")
                 if not self.click_select_button():
+                    logger.error("❌ PASO 9 FALLÓ: Failed to process CSV and send QRs")
                     return {"success": False, "error": "Failed to process CSV and send QRs"}
+                logger.info("✅ PASO 9 COMPLETADO: QRs procesados y enviados")
                 
                 # Success!
                 result = {
@@ -1474,7 +1524,8 @@ class PlanOutAutomation:
                     "steps_completed": 9
                 }
                 
-                logger.info("Full automation workflow completed successfully!")
+                logger.info("🎉 WORKFLOW COMPLETADO EXITOSAMENTE!")
+                logger.info(f"📊 Resultado final: {result}")
                 return result
                 
             finally:
