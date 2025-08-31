@@ -29,7 +29,7 @@ class PlanOutAutomation:
         self.browser = None
         self.page = None
         self.context = None
-        self.timeout = 60000  # 60 seconds timeout for slower connections
+        self.timeout = 120000  # 120 seconds timeout for maximum reliability
         
     def __enter__(self):
         """Context manager entry"""
@@ -353,7 +353,7 @@ class PlanOutAutomation:
             
             # Wait for login to complete - give more time
             try:
-                self.page.wait_for_navigation(timeout=60000)  # Increased to 60 seconds
+                self.page.wait_for_navigation(timeout=120000)  # Increased to 120 seconds
                 logger.info("Navigation completed after final login")
             except:
                 logger.warning("No navigation detected after final login")
