@@ -12,6 +12,7 @@ import json
 import requests
 import traceback
 from twilio.rest import Client
+from qr_automation import PlanOutAutomation
 
 # Configuración de logging
 logging.basicConfig(
@@ -33,6 +34,7 @@ STATE_INITIAL = None
 STATE_AWAITING_EVENT_SELECTION = 'AWAITING_EVENT_SELECTION'
 STATE_AWAITING_GUEST_TYPE = 'AWAITING_GUEST_TYPE'
 STATE_AWAITING_GUEST_DATA = 'AWAITING_GUEST_DATA'
+STATE_QR_AUTOMATION = 'QR_AUTOMATION'
 
 # Configuración de Twilio
 TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
@@ -821,6 +823,40 @@ class SheetsConnection:
                     logger.error(f"No se pudo crear la hoja 'Invitados VIP': {create_err}")
                     self.vip_guest_sheet_obj = None # Marcar como no disponible
             # --- FIN NUEVO ---
+            
+            # --- NUEVO: Hoja QR Especiales ---
+            try:
+                self.qr_special_sheet_obj = self.spreadsheet.worksheet("QR_Especiales")
+                logger.info("Hoja 'QR_Especiales' encontrada.")
+            except gspread.exceptions.WorksheetNotFound:
+                logger.warning("Hoja 'QR_Especiales' no encontrada. Intentando crearla...")
+                try:
+                    # Crear con encabezados "Telefono" para números especiales de QR
+                    expected_headers_qr = ['Telefono']
+                    self.qr_special_sheet_obj = self.spreadsheet.add_worksheet(title="QR_Especiales", rows="1", cols=len(expected_headers_qr))
+                    self.qr_special_sheet_obj.update(f'A1:{gspread.utils.rowcol_to_a1(1, len(expected_headers_qr))}', [expected_headers_qr])
+                    logger.info("Hoja 'QR_Especiales' creada con encabezados.")
+                except Exception as create_err:
+                    logger.error(f"No se pudo crear la hoja 'QR_Especiales': {create_err}")
+                    self.qr_special_sheet_obj = None # Marcar como no disponible
+            # --- FIN NUEVO QR ESPECIALES ---
+            
+            # --- NUEVO: Hoja Estado Eventos (para controlar envío automático QR) ---
+            try:
+                self.event_state_sheet_obj = self.spreadsheet.worksheet("Estado_Eventos")
+                logger.info("Hoja 'Estado_Eventos' encontrada.")
+            except gspread.exceptions.WorksheetNotFound:
+                logger.warning("Hoja 'Estado_Eventos' no encontrada. Intentando crearla...")
+                try:
+                    # Crear con encabezados para rastrear estado de envío de QRs por evento
+                    expected_headers_state = ['Evento', 'QR_Automatico_Enviado', 'Fecha_Envio', 'Hora_Envio']
+                    self.event_state_sheet_obj = self.spreadsheet.add_worksheet(title="Estado_Eventos", rows="1", cols=len(expected_headers_state))
+                    self.event_state_sheet_obj.update(f'A1:{gspread.utils.rowcol_to_a1(1, len(expected_headers_state))}', [expected_headers_state])
+                    logger.info("Hoja 'Estado_Eventos' creada con encabezados.")
+                except Exception as create_err:
+                    logger.error(f"No se pudo crear la hoja 'Estado_Eventos': {create_err}")
+                    self.event_state_sheet_obj = None # Marcar como no disponible
+            # --- FIN NUEVO ESTADO EVENTOS ---
 
             # ---> ¡AQUÍ! Inicializar atributos de caché en la instancia SIEMPRE <---
             self._phone_cache = None
@@ -830,6 +866,10 @@ class SheetsConnection:
             self._vip_phone_cache_last_refresh = 0 # NUEVO: Timestamp para caché VIP
             self._vip_pr_map_cache = None # NUEVO: Cache para mapeo VIP -> PR Name
             self._vip_pr_map_last_refresh = 0 # NUEVO: Timestamp para caché mapeo VIP
+            self._qr_special_cache = None # NUEVO: Cache para números especiales QR
+            self._qr_special_cache_last_refresh = 0 # NUEVO: Timestamp para caché QR especiales
+            self._event_state_cache = None # NUEVO: Cache para estado de eventos QR
+            self._event_state_cache_last_refresh = 0 # NUEVO: Timestamp para caché estado eventos
 
             # _phone_cache_interval es constante de clase, está bien así.
 
@@ -1022,6 +1062,168 @@ class SheetsConnection:
         except Exception as e:
             logger.error(f"Error inesperado al obtener números VIP: {e}. Usando caché VIP anterior si existe.")
             return self._vip_phone_cache if self._vip_phone_cache is not None else set()
+    
+    # --- NUEVO: Método para obtener números especiales para QR ---
+    def get_qr_special_phones(self):
+        """
+        Obtiene un set con los números de teléfono normalizados de la hoja 'QR_Especiales'.
+        Estos números pueden seguir registrando invitados y enviar comandos de QR incluso 
+        cuando el bot esté configurado para envío automático de QRs.
+        Usa caché para eficiencia.
+        """
+        now = time.time()
+        # Usar el mismo intervalo de caché que los otros teléfonos
+        if self._qr_special_cache is not None and now - self._qr_special_cache_last_refresh < self._phone_cache_interval:
+            return self._qr_special_cache
+
+        logger.info("Refrescando caché de números especiales QR...")
+        qr_special_phones_set = set()
+        try:
+            # Usa la referencia guardada en self.qr_special_sheet_obj
+            qr_special_sheet = self.qr_special_sheet_obj
+            if qr_special_sheet:
+                # Asume Col A = Telefonos en hoja QR_Especiales, salta encabezado
+                qr_special_phone_list_raw = qr_special_sheet.col_values(1)[1:]
+                for phone in qr_special_phone_list_raw:
+                    if phone:
+                        normalized_phone = re.sub(r'\D', '', str(phone))
+                        if normalized_phone:
+                            qr_special_phones_set.add(normalized_phone)
+                logger.info(f"Cargados {len(qr_special_phones_set)} números especiales QR.")
+            else:
+                # Hoja QR_Especiales no encontrada o no accesible
+                logger.warning("No se puede refrescar caché QR especiales porque la hoja 'QR_Especiales' no está disponible.")
+                # Devolver caché anterior o vacío
+                qr_special_phones_set = self._qr_special_cache if self._qr_special_cache is not None else set()
+
+            self._qr_special_cache = qr_special_phones_set
+            self._qr_special_cache_last_refresh = now
+            return self._qr_special_cache
+
+        except gspread.exceptions.APIError as e:
+            logger.error(f"Error de API al leer la hoja 'QR_Especiales': {e}. Usando caché QR especiales anterior si existe.")
+            return self._qr_special_cache if self._qr_special_cache is not None else set()
+        except Exception as e:
+            logger.error(f"Error inesperado al obtener números especiales QR: {e}. Usando caché QR especiales anterior si existe.")
+            return self._qr_special_cache if self._qr_special_cache is not None else set()
+    
+    # --- NUEVO: Métodos para gestionar estado de eventos QR ---
+    def get_event_qr_states(self):
+        """
+        Obtiene el estado de envío automático de QRs para todos los eventos.
+        Retorna un diccionario {evento: True/False} indicando si ya se envió QR automático.
+        Usa caché para eficiencia.
+        """
+        now = time.time()
+        # Usar el mismo intervalo de caché que los otros datos
+        if self._event_state_cache is not None and now - self._event_state_cache_last_refresh < self._phone_cache_interval:
+            return self._event_state_cache
+
+        logger.info("Refrescando caché de estados de eventos QR...")
+        event_states = {}
+        try:
+            # Usa la referencia guardada en self.event_state_sheet_obj
+            event_state_sheet = self.event_state_sheet_obj
+            if event_state_sheet:
+                # Obtener todos los registros de la hoja
+                records = event_state_sheet.get_all_records()
+                for record in records:
+                    evento = record.get('Evento', '').strip()
+                    qr_enviado = record.get('QR_Automatico_Enviado', False)
+                    
+                    if evento:
+                        # Convertir a booleano si viene como string
+                        if isinstance(qr_enviado, str):
+                            qr_enviado = qr_enviado.upper() in ['TRUE', 'SI', 'SÍ', 'YES', '1']
+                        elif qr_enviado is None:
+                            qr_enviado = False
+                        
+                        event_states[evento] = bool(qr_enviado)
+                
+                logger.info(f"Cargados estados de {len(event_states)} eventos QR.")
+            else:
+                # Hoja Estado_Eventos no encontrada o no accesible
+                logger.warning("No se puede refrescar caché de estados eventos porque la hoja 'Estado_Eventos' no está disponible.")
+                # Devolver caché anterior o vacío
+                event_states = self._event_state_cache if self._event_state_cache is not None else {}
+
+            self._event_state_cache = event_states
+            self._event_state_cache_last_refresh = now
+            return self._event_state_cache
+
+        except gspread.exceptions.APIError as e:
+            logger.error(f"Error de API al leer la hoja 'Estado_Eventos': {e}. Usando caché de estados anterior si existe.")
+            return self._event_state_cache if self._event_state_cache is not None else {}
+        except Exception as e:
+            logger.error(f"Error inesperado al obtener estados de eventos QR: {e}. Usando caché anterior si existe.")
+            return self._event_state_cache if self._event_state_cache is not None else {}
+    
+    def is_event_qr_sent(self, event_name):
+        """
+        Verifica si un evento específico ya tuvo envío automático de QRs.
+        
+        Args:
+            event_name (str): Nombre del evento a verificar
+            
+        Returns:
+            bool: True si ya se enviaron QRs automáticamente, False en caso contrario
+        """
+        try:
+            event_states = self.get_event_qr_states()
+            return event_states.get(event_name, False)
+        except Exception as e:
+            logger.error(f"Error verificando estado QR del evento '{event_name}': {e}")
+            return False  # En caso de error, asumir que no se envió (permitir registro)
+    
+    def mark_event_qr_sent(self, event_name):
+        """
+        Marca un evento como que ya tuvo envío automático de QRs.
+        
+        Args:
+            event_name (str): Nombre del evento a marcar
+            
+        Returns:
+            bool: True si se marcó exitosamente, False en caso contrario
+        """
+        try:
+            if not self.event_state_sheet_obj:
+                logger.error("No se puede marcar estado QR: hoja 'Estado_Eventos' no disponible")
+                return False
+            
+            # Buscar si ya existe registro para este evento
+            records = self.event_state_sheet_obj.get_all_records()
+            row_to_update = None
+            
+            for i, record in enumerate(records, start=2):  # Start at row 2 (after headers)
+                if record.get('Evento', '').strip() == event_name:
+                    row_to_update = i
+                    break
+            
+            current_time = datetime.now()
+            fecha_envio = current_time.strftime('%Y-%m-%d')
+            hora_envio = current_time.strftime('%H:%M:%S')
+            
+            if row_to_update:
+                # Actualizar registro existente
+                self.event_state_sheet_obj.update_cell(row_to_update, 2, True)  # QR_Automatico_Enviado
+                self.event_state_sheet_obj.update_cell(row_to_update, 3, fecha_envio)  # Fecha_Envio
+                self.event_state_sheet_obj.update_cell(row_to_update, 4, hora_envio)  # Hora_Envio
+                logger.info(f"Actualizado estado QR automático para evento '{event_name}'")
+            else:
+                # Crear nuevo registro
+                new_row = [event_name, True, fecha_envio, hora_envio]
+                self.event_state_sheet_obj.append_row(new_row, value_input_option='USER_ENTERED')
+                logger.info(f"Creado nuevo estado QR automático para evento '{event_name}'")
+            
+            # Invalidar caché para forzar actualización
+            self._event_state_cache = None
+            self._event_state_cache_last_refresh = 0
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error marcando estado QR para evento '{event_name}': {e}")
+            return False
         
     def get_sheet(self):
         return self.spreadsheet
@@ -2890,6 +3092,165 @@ def setup_all_checkboxes():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
+
+# ====================================
+# --- Funciones para QR Automation ---
+# ====================================
+
+def get_pending_qr_guests_by_pr(sheet_conn, pr_phone_normalized, event_filter=None):
+    """
+    Obtiene invitados pendientes de recibir QR para un PR específico
+    
+    Args:
+        sheet_conn: Instancia de SheetsConnection
+        pr_phone_normalized: Número del PR normalizado  
+        event_filter: Nombre del evento para filtrar (opcional)
+    
+    Returns:
+        List[Dict]: Lista de invitados pendientes de QR
+    """
+    try:
+        guests_by_event = get_guests_by_pr(sheet_conn, pr_phone_normalized)
+        pending_guests = []
+        
+        for event_name, event_guests in guests_by_event.items():
+            # Aplicar filtro de evento si existe
+            if event_filter and event_name != event_filter:
+                continue
+                
+            for guest in event_guests:
+                # Verificar si el QR ya fue enviado
+                qr_sent = guest.get('QR_ENVIADO', False) or guest.get('qr_enviado', False)
+                enviado = guest.get('Enviado', False) or guest.get('enviado', False)
+                
+                # Solo incluir si no se ha enviado el QR y la invitación está enviada
+                if not qr_sent and enviado:
+                    guest_data = {
+                        'name': guest.get('Nombre y Apellido') or guest.get('Nombre', 'Sin nombre'),
+                        'email': guest.get('Email') or guest.get('email', ''),
+                        'category': guest.get('TIPO', 'General'),
+                        'event': event_name,
+                        'pr_phone': pr_phone_normalized
+                    }
+                    pending_guests.append(guest_data)
+        
+        logger.info(f"Encontrados {len(pending_guests)} invitados pendientes de QR para PR {pr_phone_normalized}")
+        return pending_guests
+        
+    except Exception as e:
+        logger.error(f"Error obteniendo invitados pendientes de QR para PR {pr_phone_normalized}: {e}")
+        return []
+
+
+def get_all_pending_qr_guests(sheet_conn, event_filter=None):
+    """
+    Obtiene todos los invitados pendientes de recibir QR de todos los PRs
+    
+    Args:
+        sheet_conn: Instancia de SheetsConnection
+        event_filter: Nombre del evento para filtrar (opcional)
+    
+    Returns:
+        List[Dict]: Lista de invitados pendientes de QR
+    """
+    try:
+        # Obtener todos los números autorizados
+        authorized_phones = sheet_conn.get_authorized_phones()
+        if not authorized_phones:
+            logger.warning("No hay números autorizados para procesar QRs")
+            return []
+        
+        all_pending_guests = []
+        
+        for phone in authorized_phones:
+            pr_guests = get_pending_qr_guests_by_pr(sheet_conn, phone, event_filter)
+            all_pending_guests.extend(pr_guests)
+        
+        logger.info(f"Total de invitados pendientes de QR: {len(all_pending_guests)}")
+        return all_pending_guests
+        
+    except Exception as e:
+        logger.error(f"Error obteniendo todos los invitados pendientes de QR: {e}")
+        return []
+
+
+def update_qr_sent_status(sheet_conn, processed_guests, status=True):
+    """
+    Actualiza el estado QR_ENVIADO en Google Sheets para los invitados procesados
+    
+    Args:
+        sheet_conn: Instancia de SheetsConnection
+        processed_guests: Lista de invitados que fueron procesados
+        status: Estado a establecer (True/False)
+    """
+    try:
+        # Agrupar invitados por evento
+        guests_by_event = {}
+        for guest in processed_guests:
+            event = guest.get('event')
+            if event not in guests_by_event:
+                guests_by_event[event] = []
+            guests_by_event[event].append(guest)
+        
+        updated_count = 0
+        
+        # Actualizar cada evento
+        for event_name, event_guests in guests_by_event.items():
+            try:
+                event_sheet = sheet_conn.get_sheet_by_event_name(event_name)
+                if not event_sheet:
+                    logger.warning(f"No se pudo acceder a la hoja del evento '{event_name}' para actualizar QR status")
+                    continue
+                
+                # Obtener todos los registros actuales
+                all_records = event_sheet.get_all_records()
+                
+                # Crear índice por nombre y email para encontrar filas
+                for i, record in enumerate(all_records, start=2):  # Start at row 2 (after headers)
+                    record_name = record.get('Nombre y Apellido') or record.get('Nombre', '')
+                    record_email = record.get('Email') or record.get('email', '')
+                    
+                    # Buscar coincidencia en los invitados procesados
+                    for guest in event_guests:
+                        if (guest.get('name') == record_name and 
+                            guest.get('email') == record_email):
+                            
+                            # Actualizar la columna QR_ENVIADO
+                            try:
+                                # Buscar la columna QR_ENVIADO o crearla si no existe
+                                headers = event_sheet.row_values(1)
+                                qr_col_index = None
+                                
+                                for idx, header in enumerate(headers, 1):
+                                    if header == 'QR_ENVIADO':
+                                        qr_col_index = idx
+                                        break
+                                
+                                if qr_col_index is None:
+                                    # Agregar columna QR_ENVIADO
+                                    qr_col_index = len(headers) + 1
+                                    event_sheet.update_cell(1, qr_col_index, 'QR_ENVIADO')
+                                    logger.info(f"Creada columna QR_ENVIADO en evento {event_name}")
+                                
+                                # Actualizar el estado
+                                event_sheet.update_cell(i, qr_col_index, status)
+                                updated_count += 1
+                                logger.info(f"Actualizado QR status para {record_name} en {event_name}")
+                                
+                            except Exception as update_error:
+                                logger.error(f"Error actualizando QR status para {record_name}: {update_error}")
+                            
+                            break  # Found the guest, no need to continue searching
+                            
+            except Exception as event_error:
+                logger.error(f"Error procesando evento {event_name} para actualización QR: {event_error}")
+        
+        logger.info(f"Total de registros actualizados con QR status: {updated_count}")
+        
+    except Exception as e:
+        logger.error(f"Error actualizando estados QR en Google Sheets: {e}")
+
+
 # --- Función whatsapp_reply COMPLETA con Lógica VIP ---
 @app.route('/whatsapp', methods=['POST'])
 def whatsapp_reply():
@@ -3025,6 +3386,130 @@ def whatsapp_reply():
                     return jsonify({"status": "success"}), 200
 
         # ====================================
+        # --- Verificar comando QR (solo números especiales) ---
+        # ====================================
+        
+        # Verificar si es un comando QR
+        qr_patterns = [
+            r'(?i)^enviar\s+qr',
+            r'(?i)^enviar\s+qrs?',
+            r'(?i)^send\s+qr',
+            r'(?i)^qr\s+send',
+            r'(?i)^procesar\s+qr',
+            r'(?i)^mandar\s+qr'
+        ]
+        
+        is_qr_command = False
+        for pattern in qr_patterns:
+            if re.search(pattern, incoming_msg.strip()):
+                is_qr_command = True
+                break
+        
+        if is_qr_command:
+            logger.info(f"Comando QR detectado en estado {current_state} desde {sender_phone_normalized}.")
+            
+            # Verificar si el número está en la lista de números especiales QR
+            try:
+                qr_special_phones = sheet_conn.get_qr_special_phones()
+                if sender_phone_normalized not in qr_special_phones:
+                    logger.warning(f"Comando QR denegado para número no especial: {sender_phone_normalized}")
+                    response_text = """🚫 Lo siento, tu número no tiene permisos para enviar comandos de QR.
+                    
+Solo los números especiales configurados pueden usar esta función. Si necesitas acceso, contacta al administrador."""
+                    send_twilio_message(sender_phone_raw, response_text)
+                    return jsonify({"status": "success"}), 200
+                
+                logger.info(f"Número especial QR confirmado: {sender_phone_normalized}")
+                
+                # Procesar comando QR - obtener invitados pendientes de este PR
+                pending_guests = get_pending_qr_guests_by_pr(sheet_conn, sender_phone_normalized)
+                
+                if not pending_guests:
+                    response_text = """📋 No tienes invitados pendientes de recibir códigos QR en este momento.
+                    
+Los códigos QR solo se envían a invitados que ya tienen la invitación marcada como "Enviado: ✅" pero aún no han recibido su QR."""
+                    send_twilio_message(sender_phone_raw, response_text)
+                    return jsonify({"status": "success"}), 200
+                
+                # Confirmar y procesar
+                total_pending = len(pending_guests)
+                logger.info(f"Iniciando proceso QR manual para {total_pending} invitados del número especial {sender_phone_normalized}")
+                
+                # Enviar confirmación inmediata
+                response_text = f"""🚀 Iniciando envío de códigos QR para {total_pending} invitados pendientes.
+
+El proceso se ejecutará en segundo plano y puede tomar unos minutos. Te notificaremos cuando esté completo."""
+                send_twilio_message(sender_phone_raw, response_text)
+                
+                # Procesar en background
+                import threading
+                
+                def process_qr_for_special_number():
+                    try:
+                        logger.info(f"Proceso QR especial iniciado para {sender_phone_normalized}")
+                        
+                        with PlanOutAutomation() as automation:
+                            result = automation.full_automation_workflow(pending_guests)
+                        
+                        if result.get("success"):
+                            # Actualizar Google Sheets
+                            update_qr_sent_status(sheet_conn, pending_guests, True)
+                            
+                            # Marcar eventos como que ya tuvieron envío automático de QRs
+                            events_processed = set()
+                            for guest in pending_guests:
+                                event_name = guest.get('event')
+                                if event_name and event_name not in events_processed:
+                                    if sheet_conn.mark_event_qr_sent(event_name):
+                                        logger.info(f"Evento '{event_name}' marcado como QR automático enviado (comando especial)")
+                                        events_processed.add(event_name)
+                                    else:
+                                        logger.warning(f"No se pudo marcar evento '{event_name}' como QR enviado (comando especial)")
+                            
+                            success_msg = f"""✅ ¡Códigos QR enviados exitosamente!
+
+📊 Procesados: {total_pending} invitados
+⏰ Completado en: {datetime.now().strftime('%H:%M:%S')}
+
+Los invitados recibirán sus códigos QR por email."""
+                            send_twilio_message(sender_phone_raw, success_msg)
+                            logger.info(f"Proceso QR especial completado exitosamente para {sender_phone_normalized}")
+                            
+                        else:
+                            error_msg = f"""❌ Error en el envío de códigos QR.
+
+Error: {result.get('error', 'Error desconocido')}
+
+Por favor intenta nuevamente en unos minutos o contacta al administrador."""
+                            send_twilio_message(sender_phone_raw, error_msg)
+                            logger.error(f"Error en proceso QR especial para {sender_phone_normalized}: {result.get('error', 'Error desconocido')}")
+                            
+                    except Exception as e:
+                        error_msg = f"""❌ Error crítico en el proceso de QR.
+
+Error técnico: {str(e)}
+
+Contacta al administrador."""
+                        send_twilio_message(sender_phone_raw, error_msg)
+                        logger.error(f"Error crítico en proceso QR especial para {sender_phone_normalized}: {e}")
+                        logger.error(traceback.format_exc())
+                
+                # Iniciar proceso en background
+                thread = threading.Thread(target=process_qr_for_special_number)
+                thread.daemon = True
+                thread.start()
+                
+                return jsonify({"status": "success"}), 200
+                
+            except Exception as qr_err:
+                logger.error(f"Error procesando comando QR para {sender_phone_normalized}: {qr_err}")
+                response_text = """❌ Error interno procesando comando QR.
+
+Por favor intenta nuevamente en unos minutos."""
+                send_twilio_message(sender_phone_raw, response_text)
+                return jsonify({"status": "success"}), 200
+
+        # ====================================
         # --- Lógica Principal de Estados ---
         # ====================================
 
@@ -3039,6 +3524,10 @@ def whatsapp_reply():
             # Manejar el comando 'help'
             if command_type == 'help':
                  logger.info(f"Comando 'help' detectado.")
+                 # Verificar si es número especial QR para mostrar funcionalidad adicional
+                 qr_special_phones = sheet_conn.get_qr_special_phones()
+                 is_qr_special = sender_phone_normalized in qr_special_phones
+                 
                  welcome_text = """👋 ¡Hola! Bienvenido al sistema de gestión de invitados. 
 
 Puedo ayudarte con la administración de tu lista de invitados. Aquí tienes lo que puedes hacer:
@@ -3051,7 +3540,16 @@ Puedo ayudarte con la administración de tu lista de invitados. Aquí tienes lo 
 
 3️⃣ *Ayuda*:
   • Escribe "ayuda" para ver estas instrucciones de nuevo.
-  • Si estás en medio de una operación, escribe "cancelar" para empezar de nuevo.
+  • Si estás en medio de una operación, escribe "cancelar" para empezar de nuevo."""
+
+                 if is_qr_special:
+                     welcome_text += """
+
+🚀 *Funciones especiales* (disponibles para tu número):
+  • Escribe "enviar qr" o "mandar qr" para procesar y enviar códigos QR a tus invitados pendientes.
+  • **Privilegio especial**: Puedes seguir registrando invitados DESPUÉS de que se dispare el envío automático de QRs (8pm)."""
+
+                 welcome_text += """
 
 ¿En qué puedo ayudarte hoy?""" # Mensaje de ayuda actualizado
                  response_text = welcome_text
@@ -3229,6 +3727,35 @@ Ante cualquier duda, falla o feedback comunicate con Anto: wa.me/5491164855744
                  response_text = f"Operación de añadir invitados cancelada para el evento *{selected_event}*. Puedes enviar cualquier mensaje para elegir otro evento o gestionar uno diferente."
                  user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []} # Resetear
              else:
+                  # --- Verificar estado del evento antes de procesar invitados ---
+                  # Solo permitir registro después del envío automático de QRs a números especiales
+                  try:
+                      event_qr_sent = sheet_conn.is_event_qr_sent(selected_event)
+                      qr_special_phones = sheet_conn.get_qr_special_phones()
+                      is_special_number = sender_phone_normalized in qr_special_phones
+                      
+                      if event_qr_sent and not is_special_number:
+                          # El evento ya tuvo envío automático de QRs y este número NO es especial
+                          logger.warning(f"Registro bloqueado para número regular {sender_phone_normalized} en evento '{selected_event}' que ya tuvo envío automático de QRs")
+                          response_text = f"""⏰ El evento *{selected_event}* ya tuvo su envío automático de códigos QR.
+
+🚫 Los registros de nuevos invitados están cerrados para este evento.
+
+Si necesitas agregar invitados después del envío automático, contacta al administrador para obtener permisos especiales.
+
+Puedes elegir otro evento enviando cualquier mensaje."""
+                          user_states[sender_phone_normalized] = {'state': STATE_INITIAL, 'event': None, 'guest_type': None, 'available_events': []}
+                          send_twilio_message(sender_phone_raw, response_text)
+                          return jsonify({"status": "success"}), 200
+                      
+                      elif event_qr_sent and is_special_number:
+                          # El evento ya tuvo envío automático pero este es un número especial
+                          logger.info(f"Permitiendo registro a número especial {sender_phone_normalized} para evento '{selected_event}' con QRs ya enviados")
+                          
+                  except Exception as state_check_err:
+                      logger.error(f"Error verificando estado del evento '{selected_event}': {state_check_err}")
+                      # En caso de error, permitir el registro (comportamiento seguro)
+                  
                   # --- Lógica de Procesamiento de Datos ---
 
                   if selected_guest_type == 'VIP':
@@ -3537,5 +4064,129 @@ def broadcast_message():
 
     except Exception as e:
         logger.error(f"Error CRÍTICO en el endpoint de difusión: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({"status": "error", "message": "Ocurrió un error interno en el servidor."}), 500
+
+
+@app.route('/send_qrs', methods=['POST'])
+def send_qrs():
+    """
+    Endpoint para enviar códigos QR automáticamente via PlanOut.com.ar.
+    Espera un JSON con:
+    {
+        "pr_phone": "+54911XXXXXXXX",  // Número del PR (opcional, si no se envía procesa todos)
+        "event_filter": "EventName",   // Filtrar por evento específico (opcional)
+        "dry_run": false              // Si es true, solo simula el proceso sin enviar (opcional)
+    }
+    Requiere cabecera Authorization: Bearer <API_TOKEN>
+    """
+    # Verificar autenticación
+    auth_header = request.headers.get('Authorization')
+    expected_token = os.getenv('BROADCAST_API_TOKEN')  # Usar el mismo token que difusión
+    
+    if not expected_token:
+        logger.warning("Variable BROADCAST_API_TOKEN no configurada. Endpoint de QRs deshabilitado.")
+        return jsonify({"status": "error", "message": "Servicio no disponible"}), 503
+    
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({"status": "error", "message": "Token de autorización requerido"}), 401
+    
+    token = auth_header.split(' ', 1)[1] if len(auth_header.split(' ')) > 1 else ''
+    if token != expected_token:
+        return jsonify({"status": "error", "message": "Token de autorización inválido"}), 401
+
+    if not request.is_json:
+        return jsonify({"status": "error", "message": "Request must be JSON"}), 400
+
+    data = request.get_json()
+    pr_phone = data.get('pr_phone')  # Opcional
+    event_filter = data.get('event_filter')  # Opcional
+    dry_run = data.get('dry_run', False)  # Por defecto False
+
+    try:
+        sheet_conn = SheetsConnection()
+        
+        # Obtener invitados pendientes de QR
+        if pr_phone:
+            # Normalizar número de teléfono
+            pr_phone_normalized = re.sub(r'\D', '', pr_phone)
+            logger.info(f"Procesando QRs para PR específico: {pr_phone_normalized}")
+            pending_guests = get_pending_qr_guests_by_pr(sheet_conn, pr_phone_normalized, event_filter)
+        else:
+            logger.info("Procesando QRs para todos los PRs")
+            pending_guests = get_all_pending_qr_guests(sheet_conn, event_filter)
+
+        if not pending_guests:
+            return jsonify({
+                "status": "success", 
+                "message": "No se encontraron invitados pendientes de recibir códigos QR.",
+                "total_guests": 0
+            }), 200
+
+        total_guests = len(pending_guests)
+        logger.info(f"Encontrados {total_guests} invitados pendientes de QR")
+
+        if dry_run:
+            return jsonify({
+                "status": "success",
+                "message": f"Simulación: Se procesarían {total_guests} invitados.",
+                "total_guests": total_guests,
+                "guests_preview": pending_guests[:5],  # Mostrar primeros 5
+                "dry_run": True
+            }), 200
+
+        # Respuesta inmediata para evitar timeout
+        logger.info(f"Iniciando proceso de QRs para {total_guests} invitados en background...")
+        
+        # Procesar en background con threading
+        import threading
+        
+        def process_qrs_async():
+            try:
+                logger.info("Iniciando proceso automático de QRs con PlanOut")
+                
+                # Usar la automatización de PlanOut
+                with PlanOutAutomation() as automation:
+                    result = automation.full_automation_workflow(pending_guests)
+                
+                if result.get("success"):
+                    # Actualizar Google Sheets marcando QRs como enviados
+                    update_qr_sent_status(sheet_conn, pending_guests, True)
+                    
+                    # Marcar eventos como que ya tuvieron envío automático de QRs
+                    events_processed = set()
+                    for guest in pending_guests:
+                        event_name = guest.get('event')
+                        if event_name and event_name not in events_processed:
+                            if sheet_conn.mark_event_qr_sent(event_name):
+                                logger.info(f"Evento '{event_name}' marcado como QR automático enviado")
+                                events_processed.add(event_name)
+                            else:
+                                logger.warning(f"No se pudo marcar evento '{event_name}' como QR enviado")
+                    
+                    logger.info(f"Proceso de QRs completado exitosamente para {total_guests} invitados")
+                else:
+                    logger.error(f"Error en proceso de QRs: {result.get('error', 'Error desconocido')}")
+                    
+            except Exception as e:
+                logger.error(f"Error crítico en proceso de QRs: {e}")
+                logger.error(traceback.format_exc())
+        
+        # Iniciar proceso en background
+        thread = threading.Thread(target=process_qrs_async)
+        thread.daemon = True
+        thread.start()
+        
+        # Respuesta inmediata
+        return jsonify({
+            "status": "started",
+            "message": f"Proceso de QRs iniciado para {total_guests} invitados. El proceso continuará en background.",
+            "total_guests": total_guests,
+            "pr_phone": pr_phone if pr_phone else "todos",
+            "event_filter": event_filter if event_filter else "todos los eventos"
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error CRÍTICO en el endpoint de QRs: {e}")
         logger.error(traceback.format_exc())
         return jsonify({"status": "error", "message": "Ocurrió un error interno en el servidor."}), 500
