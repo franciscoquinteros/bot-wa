@@ -50,6 +50,3 @@ options:
 
 # Timeout for the entire build
 timeout: "1200s"
-
-# Use default Cloud Build service account
-serviceAccount: "projects/n8n-sheet-449014/serviceAccounts/494416060803-compute@developer.gserviceaccount.com"
