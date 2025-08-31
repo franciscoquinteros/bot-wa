@@ -97,13 +97,19 @@ def verify_secrets_and_environment():
             missing_secrets.append(env_var)
     
     # Verificar archivo de credenciales de Google
+    # Check for Google credentials (multiple possible sources)
     google_creds_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
-    if google_creds_path:
-        if os.path.exists(google_creds_path):
-            logger.info(f"✅ Google Credentials File: Encontrado en {google_creds_path}")
-        else:
-            logger.error(f"❌ Google Credentials File: NO encontrado en {google_creds_path}")
-            missing_secrets.append('GOOGLE_CREDENTIALS_FILE')
+    google_creds_env = os.environ.get('GOOGLE_CREDENTIALS_FILE')
+    
+    if google_creds_path and os.path.exists(google_creds_path):
+        logger.info(f"✅ Google Credentials File: Encontrado en {google_creds_path}")
+        found_secrets.append('GOOGLE_APPLICATION_CREDENTIALS')
+    elif google_creds_env:
+        logger.info("✅ Google Credentials: Encontrado en variable de entorno GOOGLE_CREDENTIALS_FILE")
+        found_secrets.append('GOOGLE_CREDENTIALS_FILE')
+    else:
+        logger.error("❌ Google Credentials: NO encontrado (ni archivo ni variable de entorno)")
+        missing_secrets.append('GOOGLE_CREDENTIALS')
     
     # Resumen
     logger.info(f"📊 RESUMEN DE VERIFICACIÓN:")
@@ -872,8 +878,26 @@ class SheetsConnection:
     def _connect(self):
         try:
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-            creds_path = os.environ.get("GOOGLE_CREDENTIALS_PATH", "/etc/secrets/google-credentials.json")
-            creds = ServiceAccountCredentials.from_json_keyfile_name(creds_path, scope)
+            
+            # Try to get credentials from mounted file first (Cloud Run with secret mounts)
+            creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            if creds_path and os.path.exists(creds_path):
+                logger.info(f"Using Google credentials from mounted file: {creds_path}")
+                creds = ServiceAccountCredentials.from_json_keyfile_name(creds_path, scope)
+            else:
+                # Fallback to JSON string in environment variable (other deployments)
+                creds_json = os.environ.get("GOOGLE_CREDENTIALS_FILE")
+                if creds_json:
+                    logger.info("Using Google credentials from environment variable")
+                    import json
+                    creds_dict = json.loads(creds_json)
+                    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+                else:
+                    # Final fallback to old path method
+                    creds_path_fallback = os.environ.get("GOOGLE_CREDENTIALS_PATH", "/etc/secrets/google-credentials.json")
+                    logger.info(f"Using Google credentials from fallback path: {creds_path_fallback}")
+                    creds = ServiceAccountCredentials.from_json_keyfile_name(creds_path_fallback, scope)
+            
             self.client = gspread.authorize(creds)
             self.spreadsheet = self.client.open("n8n sheet") # Nombre del Archivo Google Sheet
 
