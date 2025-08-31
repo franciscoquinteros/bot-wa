@@ -16,7 +16,7 @@ steps:
       - "push"
       - "gcr.io/$PROJECT_ID/bot-wa:latest"
 
-  # Step 3: Deploy to Cloud Run with optimized configuration
+  # Step 3: Deploy to Cloud Run with optimized configuration and secrets
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: "gcloud"
     args:
@@ -33,7 +33,8 @@ steps:
       - "--max-instances=10"
       - "--timeout=900s"
       - "--execution-environment=gen2"
-      - "--set-env-vars=PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright,DISPLAY=:99"
+      - "--set-env-vars=PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright,DISPLAY=:99,GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/google-credentials.json"
+      - "--set-secrets=/etc/secrets=GOOGLE_APPLICATION_CREDENTIALS:latest,BROADCAST_API_TOKEN=BROADCAST_API_TOKEN:latest,GOOGLE_APPLICATION_CREDENTIAL=GOOGLE_APPLICATION_CREDENTIALS:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,TWILIO_ACCOUNT_SID=TWILIO_ACCOUNT_SID:latest,TWILIO_AUTH_TOKEN=TWILIO_AUTH_TOKEN:latest,TWILIO_WHATSAPP_NUMBER=TWILIO_WHATSAPP_NUMBER:latest,PLANOUT_USERNAME=PLANOUT_USERNAME:latest,PLANOUT_PASSWORD=PLANOUT_PASSWORD:latest,PLANOUT_HEADLESS=PLANOUT_HEADLESS:latest"
       - "--allow-unauthenticated"
       - "--quiet"
 
