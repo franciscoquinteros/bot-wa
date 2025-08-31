@@ -14,15 +14,33 @@ import traceback
 from twilio.rest import Client
 from qr_automation import PlanOutAutomation
 
-# Configuración de logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("whatsapp_bot.log"),
-        logging.StreamHandler()
-    ]
-)
+# Configuración de logging optimizada para Google Cloud Run
+import sys
+
+# Detectar si estamos en Google Cloud Run
+is_cloud_run = os.environ.get('K_SERVICE') is not None
+
+if is_cloud_run:
+    # Configuración para Google Cloud Run - solo console output
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout)  # Solo salida a stdout para Cloud Logging
+        ]
+    )
+    print("🌐 Logging configurado para Google Cloud Run")
+else:
+    # Configuración para desarrollo local - archivo + consola
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler("whatsapp_bot.log"),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    print("💻 Logging configurado para desarrollo local")
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -3446,10 +3464,18 @@ El proceso se ejecutará en segundo plano y puede tomar unos minutos. Te notific
                 
                 def process_qr_for_special_number():
                     try:
-                        logger.info(f"Proceso QR especial iniciado para {sender_phone_normalized}")
+                        logger.info(f"🚀 INICIO PROCESO QR ESPECIAL para {sender_phone_normalized}")
+                        logger.info(f"📊 Invitados a procesar: {len(pending_guests)}")
                         
+                        # Log detallado de los invitados
+                        for i, guest in enumerate(pending_guests[:3], 1):  # Mostrar primeros 3
+                            logger.info(f"👤 Invitado {i}: {guest.get('name', 'Sin nombre')} - {guest.get('email', 'Sin email')}")
+                        
+                        logger.info("🌐 Iniciando PlanOutAutomation...")
                         with PlanOutAutomation() as automation:
+                            logger.info("🔐 Ejecutando full_automation_workflow...")
                             result = automation.full_automation_workflow(pending_guests)
+                            logger.info(f"✅ Resultado de automatización: {result}")
                         
                         if result.get("success"):
                             # Actualizar Google Sheets
@@ -4143,11 +4169,19 @@ def send_qrs():
         
         def process_qrs_async():
             try:
-                logger.info("Iniciando proceso automático de QRs con PlanOut")
+                logger.info("🤖 INICIO PROCESO QR AUTOMÁTICO (endpoint /send_qrs)")
+                logger.info(f"📊 Total invitados pendientes: {len(pending_guests)}")
                 
+                # Log detallado de algunos invitados
+                for i, guest in enumerate(pending_guests[:3], 1):  # Mostrar primeros 3
+                    logger.info(f"👤 Invitado {i}: {guest.get('name', 'Sin nombre')} - {guest.get('email', 'Sin email')} - Evento: {guest.get('event', 'Sin evento')}")
+                
+                logger.info("🌐 Iniciando PlanOutAutomation desde endpoint...")
                 # Usar la automatización de PlanOut
                 with PlanOutAutomation() as automation:
+                    logger.info("🔐 Ejecutando full_automation_workflow desde /send_qrs...")
                     result = automation.full_automation_workflow(pending_guests)
+                    logger.info(f"✅ Resultado de automatización (endpoint): {result}")
                 
                 if result.get("success"):
                     # Actualizar Google Sheets marcando QRs como enviados
