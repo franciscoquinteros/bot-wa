@@ -35,13 +35,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Instalar browsers de Playwright
 RUN playwright install chromium
-RUN playwright install-deps chromium
 
 COPY . .
 
 # Configurar variables de entorno para Playwright
 ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV DISPLAY=:99
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Reemplaza "main.py" con el nombre de tu archivo principal
 CMD gunicorn --bind 0.0.0.0:8080 bot_whatsapp:app
