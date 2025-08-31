@@ -41,11 +41,99 @@ else:
         ]
     )
     print("💻 Logging configurado para desarrollo local")
+
+# Función para verificar secretos al inicio
+def verify_secrets_and_environment():
+    """Verifica que todos los secretos y variables de entorno estén disponibles"""
+    logger = logging.getLogger(__name__)
+    
+    logger.info("🔍 VERIFICANDO SECRETOS Y VARIABLES DE ENTORNO...")
+    
+    # Lista de secretos requeridos
+    required_secrets = {
+        'TWILIO_ACCOUNT_SID': 'Twilio Account SID',
+        'TWILIO_AUTH_TOKEN': 'Twilio Auth Token', 
+        'TWILIO_WHATSAPP_NUMBER': 'Twilio WhatsApp Number',
+        'GOOGLE_APPLICATION_CREDENTIALS': 'Google Application Credentials Path',
+        'BROADCAST_API_TOKEN': 'Broadcast API Token',
+        'OPENAI_API_KEY': 'OpenAI API Key',
+        'PLANOUT_USERNAME': 'PlanOut Username',
+        'PLANOUT_PASSWORD': 'PlanOut Password',
+        'PLANOUT_HEADLESS': 'PlanOut Headless Mode'
+    }
+    
+    # Variables de entorno de Playwright
+    playwright_vars = {
+        'PLAYWRIGHT_BROWSERS_PATH': 'Playwright Browsers Path',
+        'DISPLAY': 'Display for X11'
+    }
+    
+    missing_secrets = []
+    found_secrets = []
+    
+    # Verificar secretos requeridos
+    for env_var, description in required_secrets.items():
+        value = os.environ.get(env_var)
+        if value:
+            # Ocultar valor sensible, mostrar solo primeros y últimos caracteres
+            if len(value) > 10:
+                masked_value = f"{value[:3]}...{value[-3:]}"
+            else:
+                masked_value = f"{value[:2]}...{value[-1]}"
+            logger.info(f"✅ {description}: {masked_value}")
+            found_secrets.append(env_var)
+        else:
+            logger.error(f"❌ FALTA: {description} ({env_var})")
+            missing_secrets.append(env_var)
+    
+    # Verificar variables de Playwright
+    for env_var, description in playwright_vars.items():
+        value = os.environ.get(env_var)
+        if value:
+            logger.info(f"✅ {description}: {value}")
+            found_secrets.append(env_var)
+        else:
+            logger.warning(f"⚠️ FALTA: {description} ({env_var})")
+            missing_secrets.append(env_var)
+    
+    # Verificar archivo de credenciales de Google
+    google_creds_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+    if google_creds_path:
+        if os.path.exists(google_creds_path):
+            logger.info(f"✅ Google Credentials File: Encontrado en {google_creds_path}")
+        else:
+            logger.error(f"❌ Google Credentials File: NO encontrado en {google_creds_path}")
+            missing_secrets.append('GOOGLE_CREDENTIALS_FILE')
+    
+    # Resumen
+    logger.info(f"📊 RESUMEN DE VERIFICACIÓN:")
+    logger.info(f"✅ Secretos encontrados: {len(found_secrets)}")
+    logger.info(f"❌ Secretos faltantes: {len(missing_secrets)}")
+    
+    if missing_secrets:
+        logger.warning(f"⚠️ Secretos faltantes: {', '.join(missing_secrets)}")
+        logger.warning("🔧 El bot puede no funcionar correctamente sin estos secretos")
+    else:
+        logger.info("🎉 TODOS LOS SECRETOS ESTÁN CONFIGURADOS CORRECTAMENTE!")
+    
+    # Verificar entorno específico
+    if is_cloud_run:
+        logger.info("🌐 Ejecutándose en Google Cloud Run")
+        service_name = os.environ.get('K_SERVICE', 'unknown')
+        revision = os.environ.get('K_REVISION', 'unknown')
+        logger.info(f"📋 Service: {service_name}, Revision: {revision}")
+    else:
+        logger.info("💻 Ejecutándose en entorno local/desarrollo")
+    
+    return len(missing_secrets) == 0
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
 user_states = {}
+
+# Verificar secretos al inicio del bot
+verify_secrets_and_environment()
 
 # --- Constantes para los estados ---
 STATE_INITIAL = None
