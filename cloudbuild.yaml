@@ -42,7 +42,7 @@ steps:
 images:
   - "us-central1-docker.pkg.dev/$PROJECT_ID/bot-wa-repo/bot-wa:latest"
 
-# Options for faster builds
+# Options for faster builds 
 options:
   machineType: "E2_HIGHCPU_8"
   diskSizeGb: "100"
