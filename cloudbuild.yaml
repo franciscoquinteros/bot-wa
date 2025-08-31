@@ -26,23 +26,24 @@ steps:
       - "--image=us-central1-docker.pkg.dev/$PROJECT_ID/bot-wa-repo/bot-wa:latest"
       - "--platform=managed"
       - "--region=us-central1"
-      - "--cpu=4"
-      - "--memory=8Gi"
+      - "--cpu=8"
+      - "--memory=16Gi"
       - "--concurrency=20"
-      - "--min-instances=0"
+      - "--min-instances=1"
       - "--max-instances=10"
       - "--timeout=900s"
       - "--execution-environment=gen2"
       - "--set-env-vars=PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright,DISPLAY=:99"
       - "--set-secrets=GOOGLE_APPLICATION_CREDENTIALS=GOOGLE_APPLICATION_CREDENTIALS:latest,GOOGLE_CREDENTIALS_FILE=GOOGLE_CREDENTIALS_FILE:latest,BROADCAST_API_TOKEN=BROADCAST_API_TOKEN:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,TWILIO_ACCOUNT_SID=TWILIO_ACCOUNT_SID:latest,TWILIO_AUTH_TOKEN=TWILIO_AUTH_TOKEN:latest,TWILIO_WHATSAPP_NUMBER=TWILIO_WHATSAPP_NUMBER:latest,PLANOUT_USERNAME=PLANOUT_USERNAME:latest,PLANOUT_PASSWORD=PLANOUT_PASSWORD:latest,PLANOUT_HEADLESS=PLANOUT_HEADLESS:latest"
       - "--allow-unauthenticated"
+      - "--vpc-egress=all-traffic"
       - "--quiet"
 
 # Images to store in Artifact Registry
 images:
   - "us-central1-docker.pkg.dev/$PROJECT_ID/bot-wa-repo/bot-wa:latest"
 
-# Options for faster builds  
+# Options for faster builds
 options:
   machineType: "E2_HIGHCPU_8"
   diskSizeGb: "100"
@@ -50,4 +51,3 @@ options:
 
 # Timeout for the entire build
 timeout: "1200s"
- 
