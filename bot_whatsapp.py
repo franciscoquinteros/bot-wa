@@ -61,7 +61,7 @@ def verify_secrets_and_environment():
         'PLANOUT_PASSWORD': 'PlanOut Password',
         'PLANOUT_HEADLESS': 'PlanOut Headless Mode'
     }
-    
+     
     # Variables de entorno de Playwright
     playwright_vars = {
         'PLAYWRIGHT_BROWSERS_PATH': 'Playwright Browsers Path',
