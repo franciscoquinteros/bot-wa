@@ -29,7 +29,7 @@ class PlanOutAutomation:
         self.browser = None
         self.page = None
         self.context = None
-        self.timeout = 30000  # 30 seconds timeout
+        self.timeout = 60000  # 60 seconds timeout for slower connections
         
     def __enter__(self):
         """Context manager entry"""
@@ -174,13 +174,27 @@ class PlanOutAutomation:
         try:
             logger.info(f"Attempting 2-step login to PlanOut.ar: {self.login_url}")
             
-            # Navigate to login page
-            response = self.page.goto(self.login_url, wait_until="networkidle", timeout=self.timeout)
-            if not response.ok:
-                logger.error(f"Failed to load login page: HTTP {response.status}")
-                return False
-            
-            logger.info("Login page loaded successfully")
+            # Navigate to login page with retry logic
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"Attempting to load login page (attempt {attempt + 1}/{max_retries})")
+                    response = self.page.goto(self.login_url, wait_until="domcontentloaded", timeout=self.timeout)
+                    if response and response.ok:
+                        logger.info("Login page loaded successfully")
+                        break
+                    else:
+                        logger.warning(f"Login page response not OK: {response.status if response else 'No response'}")
+                        if attempt == max_retries - 1:
+                            return False
+                except Exception as e:
+                    logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
+                    if attempt == max_retries - 1:
+                        logger.error(f"All {max_retries} attempts failed to load login page")
+                        return False
+                    # Wait before retry
+                    import time
+                    time.sleep(5)
             
             # Wait for login form to be visible
             try:
@@ -339,7 +353,7 @@ class PlanOutAutomation:
             
             # Wait for login to complete - give more time
             try:
-                self.page.wait_for_navigation(timeout=30000)  # Increased to 30 seconds
+                self.page.wait_for_navigation(timeout=60000)  # Increased to 60 seconds
                 logger.info("Navigation completed after final login")
             except:
                 logger.warning("No navigation detected after final login")
