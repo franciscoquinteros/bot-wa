@@ -11,7 +11,8 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     fonts-liberation \
     fonts-unifont \
-    fonts-ubuntu \
+    fonts-noto \
+    fonts-dejavu \
     libasound2 \
     libatk-bridge2.0-0 \
     libatk1.0-0 \
