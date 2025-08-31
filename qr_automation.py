@@ -66,16 +66,65 @@ class PlanOutAutomation:
                 # Intentar instalar browsers si faltan
                 logger.info("🔄 Intentando instalar browsers de Playwright...")
                 import subprocess
+                import os
                 try:
-                    subprocess.run(['playwright', 'install', 'chromium'], check=True, capture_output=True)
-                    logger.info("✅ Browsers instalados, reintentando...")
+                    # Verificar paths y variables de entorno
+                    logger.info(f"🔍 PLAYWRIGHT_BROWSERS_PATH: {os.environ.get('PLAYWRIGHT_BROWSERS_PATH', 'Not set')}")
+                    logger.info(f"🔍 PATH: {os.environ.get('PATH', 'Not set')}")
+                    
+                    # Instalar con verbose para ver qué pasa
+                    result = subprocess.run(['playwright', 'install', 'chromium'], 
+                                          check=True, capture_output=True, text=True)
+                    logger.info(f"✅ Instalación exitosa: {result.stdout}")
+                    if result.stderr:
+                        logger.warning(f"⚠️ Warnings durante instalación: {result.stderr}")
+                    
+                    logger.info("🔄 Reintentando lanzar browser...")
                     self.browser = self.playwright.chromium.launch(
                         headless=self.headless,
-                        args=['--no-sandbox', '--disable-dev-shm-usage']
+                        args=[
+                            '--no-sandbox', 
+                            '--disable-dev-shm-usage',
+                            '--disable-web-security',
+                            '--disable-features=VizDisplayCompositor'
+                        ]
                     )
                 except Exception as install_error:
                     logger.error(f"❌ Error instalando browsers: {install_error}")
-                    raise browser_error
+                    # Como último recurso, intentar con path específico
+                    logger.info("🔄 Intentando con path específico de browser...")
+                    try:
+                        import os
+                        possible_paths = [
+                            "/root/.cache/ms-playwright/chromium-1105/chrome-linux/chrome",
+                            "/root/.cache/ms-playwright/chromium-*/chrome-linux/chrome",
+                            "/usr/bin/chromium",
+                            "/usr/bin/chromium-browser"
+                        ]
+                        for path in possible_paths:
+                            if '*' in path:
+                                import glob
+                                expanded_paths = glob.glob(path)
+                                if expanded_paths:
+                                    path = expanded_paths[0]
+                            if os.path.exists(path):
+                                logger.info(f"✅ Encontrado browser en: {path}")
+                                self.browser = self.playwright.chromium.launch(
+                                    executable_path=path,
+                                    headless=self.headless,
+                                    args=[
+                                        '--no-sandbox', 
+                                        '--disable-dev-shm-usage',
+                                        '--disable-web-security',
+                                        '--disable-features=VizDisplayCompositor'
+                                    ]
+                                )
+                                break
+                        else:
+                            raise browser_error
+                    except Exception as final_error:
+                        logger.error(f"❌ Error final: {final_error}")
+                        raise browser_error
             
             # Create browser context with clean cache
             self.context = self.browser.new_context(
