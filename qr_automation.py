@@ -175,26 +175,20 @@ class PlanOutAutomation:
             logger.info(f"Attempting 2-step login to PlanOut.ar: {self.login_url}")
             
             # Navigate to login page with retry logic
-            max_retries = 2
+            max_retries = 5
             for attempt in range(max_retries):
                 try:
                     logger.info(f"Attempting to load login page (attempt {attempt + 1}/{max_retries})")
-                    response = self.page.goto(self.login_url, wait_until="domcontentloaded", timeout=self.timeout)
+                    response = self.page.goto(self.login_url, wait_until="domcontentloaded", timeout=30000)
                     if response and response.ok:
                         logger.info("Login page loaded successfully")
                         break
-                    else:
-                        logger.warning(f"Login page response not OK: {response.status if response else 'No response'}")
-                        if attempt == max_retries - 1:
-                            return False
                 except Exception as e:
                     logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
                     if attempt == max_retries - 1:
                         logger.error(f"All {max_retries} attempts failed to load login page")
                         return False
-                    # Wait before retry
-                    import time
-                    time.sleep(5)
+                    time.sleep((attempt + 1) * 2)  # Backoff: 2s, 4s, 6s, 8s
             
             # Wait for login form to be visible
             try:
